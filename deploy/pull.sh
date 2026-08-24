@@ -48,9 +48,15 @@ if ! node server.mjs --selftest >/tmp/camp-selftest.txt 2>&1; then
   exit 1
 fi
 
-# Только раздаваемое плюс сам сервер. participants.json и signups.json
-# в /srv/camp не трогаем: они приезжают с ноутбука и копятся от телефонов.
-install -m644 -o camp -g camp landing.html sw.js manifest.webmanifest server.mjs "$APP/"
+# Код — из git. Панели тоже код: их правит человек, а не панель.
+install -m644 -o camp -g camp sw.js manifest.webmanifest server.mjs \
+                              admin.html reception.html "$APP/"
+
+# landing.html СЮДА НЕ ВХОДИТ намеренно. Его правит штаб прямо на сервере,
+# значит это уже не код, а живое состояние — как участники и записи. Ставим
+# из репозитория ровно один раз, когда файла на сервере ещё нет; дальше
+# git-версия остаётся образцом для нового лагеря, а не источником правды.
+[ -f "$APP/landing.html" ] || install -m644 -o camp -g camp landing.html "$APP/"
 # --delete внутри icons/ и deploy/ безопасен: это папки только с кодом,
 # живых данных в них нет. В корне $APP --delete не применяется никогда.
 rsync -a --delete --chown=camp:camp icons deploy "$APP/"
