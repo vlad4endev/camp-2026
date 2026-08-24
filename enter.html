@@ -5,16 +5,17 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light">
 <title>Вход · Офлайн Кемп</title>
+<!-- Палитра общая со штабом и стойкой. -->
+<link rel="stylesheet" href="camp-ui.css">
 <style>
 /* Токены те же, что в штабе, на стойке и на лендинге: одна семья.
    Шрифт системный намеренно — это первая страница, которую видит
    человек, и ждать загрузки Manrope ради одного заголовка незачем. */
 :root{
-  --bg:#F3F6F4; --panel:#fff; --line:#E2EAE5; --line2:#D3DED7;
-  --ink:#0C1711; --mut:#5F7568; --acc:#2A6B3E; --acc2:#48B873;
-  --err:#E5533C; --tap:46px;
+  --tap:46px;
+  /* Manrope здесь НЕ подключён нарочно (см. шапку файла): дверь открывает
+     человек, который спешит. Поэтому --dsp у двери свой, а не общий. */
   --dsp:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;
-  --ease:cubic-bezier(.22,.61,.36,1);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -74,6 +75,9 @@ h1{font-family:var(--dsp);font-size:23px;font-weight:800;letter-spacing:-.035em}
     ваша роль в лагере, а не адрес, который вы открыли.</p>
 </div>
 
+<!-- Общий слой панелей: помощники DOM, плашки, файл на сервере.
+     Раньше это лежало копией в каждой странице и тихо расходилось. -->
+<script src="camp-ui.js"></script>
 <script src="camp-db.js"></script>
 <script>
 'use strict';
@@ -148,14 +152,17 @@ function dressForm(){
     : 'Лагерь работает без интернета: список доступа лежит рядом с панелью, пароль проверяет сервер. Куда пустить — решает ваша роль.';
 }
 
-/* Место лагеря берём из лендинга — той же строкой, что и панели.
+/* Место лагеря спрашиваем у сервера — тем же маршрутом, которым живёт
+   лендинг и панели. Раньше дверь качала landing.html целиком (295 КБ),
+   чтобы регуляркой достать оттуда одну строку: своя, пятая по счёту копия
+   разбора — ради подписи под логотипом.
    Не критично: не вышло — остаётся подпись по умолчанию. */
 async function place(){
   try {
-    const r = await fetch('landing.html', { cache:'no-store' });
+    const r = await fetch('camp', { cache:'no-store' });
     if (!r.ok) return;
-    const m = (await r.text()).match(/\n\s*place:'([^'\n]{1,60})'/);
-    if (m) $('#place').textContent = m[1].replace(/,\s*/g, ' · ');
+    const p = ((await r.json()).camp || {}).place;
+    if (p) $('#place').textContent = String(p).replace(/,\s*/g, ' · ');
   } catch (_) {}
 }
 

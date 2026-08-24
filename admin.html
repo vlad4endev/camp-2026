@@ -11,11 +11,11 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" media="print" onload="this.media='all'"
       href="https://fonts.googleapis.com/css2?family=Manrope:wght@700;800&family=Inter:wght@400;500;600;700&display=swap">
+<!-- Палитра — общая со стойкой и дверью (camp-ui.css). Ниже остаётся
+     только то, что у штаба своё: плотность мыши, а не пальца. -->
+<link rel="stylesheet" href="camp-ui.css">
 <style>
 :root{
-  --bg:#F3F6F4; --panel:#fff; --line:#E2EAE5; --line2:#D3DED7;
-  --ink:#0C1711; --mut:#5F7568; --acc:#2A6B3E; --acc2:#48B873; --accw:#E9F6ED;
-  --warn:#D9940A; --warnw:#FFF6E6; --err:#E5533C; --errw:#FFF0EC;
   --r:10px; --sh:0 1px 2px rgba(11,23,16,.05),0 6px 18px rgba(11,23,16,.05);
   /* ниже — токены со страницы лагеря: экран входа собран из них, чтобы
      панель и страница читались одним продуктом, а не двумя проектами */
@@ -353,6 +353,9 @@ body.locked .top,body.locked .wrap{display:none}
 <!-- Единая база: общий клиент со стойкой. Правило «что считать
      изменением» должно быть одно на две панели — см. camp-db.js.
      Файла нет или база не настроена — штаб работает по файлам. -->
+<!-- Общий слой панелей: помощники DOM, плашки, файл на сервере.
+     Раньше это лежало копией в каждой странице и тихо расходилось. -->
+<script src="camp-ui.js"></script>
 <script src="camp-db.js"></script>
 <script>
 /* ═══════════════════════════════════════════════════════════════
@@ -366,8 +369,7 @@ body.locked .top,body.locked .wrap{display:none}
                          весь лагерь, персональным данным там не место.
    ═══════════════════════════════════════════════════════════════ */
 
-const $  = (s,r=document) => r.querySelector(s);
-const $$ = (s,r=document) => [...r.querySelectorAll(s)];
+
 
 /* Единая база включена, если настроена и выполнен вход. Иначе всё ниже
    идёт прежним путём — по файлам через File System Access. Так переезд
@@ -394,20 +396,13 @@ const S = {
 };
 
 /* ── 1. ЧТЕНИЕ И ЗАПИСЬ БЛОКА CAMP ──────────────────────────────
-   Закрывающая «};» с начала строки — граница блока: все вложенные
-   скобки внутри CAMP идут с отступом. */
-const CAMP_RE = /const CAMP\s*=\s*\{[\s\S]*?\n\};/;
+   parseCamp, injectCamp и CAMP_RE теперь общие — camp-ui.js. Здесь была
+   третья копия одного и того же выражения из четырёх (ещё две жили в
+   server.mjs и bots.mjs), и совпадали они только пока их не трогали.
 
-function parseCamp(html){
-  const m = html.match(CAMP_RE);
-  if(!m) throw new Error('В файле не найден блок «const CAMP={…};» — это точно landing.html?');
-  return new Function('return (' + m[0].slice(m[0].indexOf('{'), -1) + ')')();
-}
-function injectCamp(html, camp){
-  if(!CAMP_RE.test(html)) throw new Error('Блок CAMP не найден — файл изменился?');
-  // функция-заменитель: в данных могут встретиться $&, $1 и прочие спецпоследовательности
-  return html.replace(CAMP_RE, () => 'const CAMP=' + JSON.stringify(camp, null, 2) + ';');
-}
+   Штабу разбор нужен НЕ ради данных: расписание приходит из GET /camp или
+   из базы, а уходит через PUT /camp. Он нужен для файла, открытого прямо
+   с диска, и для выгрузки готовой страницы одним файлом. */
 /* ключи объекта `const NAME={…};` — типы событий, метки и иконки берём
    из самого лендинга, чтобы админка не расходилась с ним */
 function blockKeys(html, name){
@@ -440,8 +435,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const pad = n => String(n).padStart(2,'0');
 const nowLocal = () => { const d = new Date();
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
-function plural(n,f){ const a=Math.abs(n)%100, b=a%10;
-  if(a>10&&a<20) return f[2]; if(b>1&&b<5) return f[1]; if(b===1) return f[0]; return f[2]; }
+
 const DOW = ['ВС','ПН','ВТ','СР','ЧТ','ПТ','СБ'];
 /* Имя, под которым мастер-класс лежит в записях участников: «название · день».
    Правило живёт в лендинге (function clsKey) — здесь та же строчка, потому что
@@ -454,13 +448,7 @@ const syncDows = () => S.camp.days.forEach(d => { d.dow = dowOf(d.date); });
 const digits = s => String(s||'').replace(/\D/g,'');
 const tgClean = s => String(s||'').trim().replace(/^https?:\/\/(t\.me|telegram\.me)\//i,'').replace(/^@/,'');
 
-function toast(text, kind){
-  const el = document.createElement('div');
-  el.className = 'toast' + (kind ? ' ' + kind : '');
-  el.textContent = text;
-  $('#toasts').append(el);
-  setTimeout(() => el.remove(), 2600);
-}
+
 function openModal(html){ const m = $('#modal'); m.className = 'modal'; m.innerHTML = `<div class="box">${html}</div>`; m.hidden = false; }
 function closeModal(){ $('#modal').hidden = true; $('#modal').innerHTML = ''; }
 
@@ -638,8 +626,19 @@ const JSON_T = { types:[{ description:'JSON', accept:{'application/json':['.json
    Приём: отдаём наружу ровно тот же интерфейс handle, что даёт браузер, —
    getFile() и createWritable(). Тогда все существующие пути сохранения,
    проверка конфликтов и автосохранение работают без единой правки. Читаем
-   GET, пишем PUT; порт панели в server.mjs разрешает только эти четыре
-   имени файлов.
+   GET, пишем PUT; server.mjs разрешает запись только по списку имён.
+   Сам хэндл теперь общий со стойкой — srvFile в camp-ui.js.
+
+   Лендинг из этого правила выпал нарочно: его панель сохраняет не файлом,
+   а данными через PUT /camp (см. saveCampToServer). Разметку она не
+   правит — значит и присылать её обратно не должна.
+
+   Маршрута PUT /landing.html после этого не осталось вовсе: сервер отдаёт
+   403 любой роли, включая штаб. Оставлять открытым маршрут, которым никто
+   не пользуется, — значит держать дверь для того единственного, кто в неё
+   однажды войдёт: старой вкладки, недоделанного скрипта, куки, пережившей
+   смену роли. Отличить такую запись от законной было бы нечем — законных
+   больше нет. Разметку правит человек через git.
 
    ОПРЕДЕЛЯЕМ ПО ПРОТОКОЛУ, а не по имени хоста. Раньше здесь стоял
    список localhost/127.0.0.1 — «на ноутбуке сервера как бы нет», — и на
@@ -656,31 +655,6 @@ const JSON_T = { types:[{ description:'JSON', accept:{'application/json':['.json
    выбор папки не проверял вовсе. */
 const ONSRV = /^https?:$/.test(location.protocol);
 
-function srvFile(name){
-  return { kind:'file', name,
-    async getFile(){
-      const r = await fetch(name + '?t=' + Date.now(), { cache:'no-store' });
-      if(!r.ok) throw new Error(name + ': HTTP ' + r.status);
-      const text = await r.text();
-      // X-Mtime ставит server.mjs: по нему conflict() ловит чужую правку
-      return { name, lastModified: Number(r.headers.get('X-Mtime')) || 0,
-               text: async () => text };
-    },
-    async createWritable(){
-      let buf = '';
-      return {
-        write: async t => { buf += t; },
-        close: async () => {
-          const r = await fetch(name, { method:'PUT', body: buf });
-          if(r.ok) return;
-          let why = '';
-          try{ why = (await r.json()).error || ''; }catch(_){}
-          // Молчать нельзя: панель считала бы правку сохранённой, а лагерь
-          // видел бы старое. Пусть падает громко — вызывающий покажет toast.
-          throw new Error('сервер не принял ' + name + ': ' + (why || 'HTTP ' + r.status));
-        } };
-    } };
-}
 
 /* Читаем файл с сервера и ставим handle. Файла может ещё не быть
    (users.json, integrations.json) — тогда handle всё равно ставим, файл
@@ -920,6 +894,44 @@ async function writeTo(handle, text){
   const w = await handle.createWritable();
   await w.write(text); await w.close();
 }
+/* ── ЛЕНДИНГ НА СЕРВЕР: ТОЛЬКО ДАННЫЕ ──────────────────────────
+   Раньше панель присылала обратно весь landing.html — 295 КБ, из которых
+   данными были 12. Разметку она при этом не правила, а отправляла: свою
+   копию, прочитанную когда-то на загрузке.
+
+   Из-за этого правка вёрстки жила ровно до следующего «Сохранить» из
+   вкладки, открытой раньше, — и пропадала молча, потому что панель не
+   считала себя редактором разметки и ничего про неё не спрашивала.
+
+   Теперь уезжает только блок CAMP, а склеивает сервер (PUT /camp → camp.mjs).
+   Затирать разметку стало нечем.
+
+   Бэкап делает сервер (snapFile в backups/), поэтому ensureBackup здесь
+   не зовём: он и так умеет работать только с папкой на диске. */
+async function saveCampToServer(auto){
+  const c = await conflict(S.hCamp, S.mtC, S.name, auto);
+  if(c === 'cancel'){ if(auto) toast('Файл изменился на диске — автосохранение остановлено', 'err'); return false; }
+  if(c === 'reload'){
+    const f = await S.hCamp.getFile();
+    S.mtC = f.lastModified; loadLanding(await f.text(), S.name);
+    return false;
+  }
+  const r = await fetch('camp', { method:'PUT',
+    headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(S.camp) });
+  if(!r.ok){
+    let why = '';
+    try{ why = (await r.json()).error || ''; }catch(_){}
+    throw new Error('сервер не принял расписание: ' + (why || 'HTTP ' + r.status));
+  }
+  const j = await r.json().catch(() => ({}));
+  /* Время файла берём из ответа: сверять чужие правки надо, а качать ради
+     одного числа всю разметку — нет. */
+  if(j.mt) S.mtC = j.mt;
+  S.html = injectCamp(S.html, S.camp);      // своя копия — в согласии с сервером
+  S.dirty = false;
+  return true;
+}
+
 async function saveLanding(auto){
   let out = injectCamp(S.html, S.camp);
 
@@ -935,7 +947,12 @@ async function saveLanding(auto){
     try{ await CampDB.saveCamp(S.camp); }
     catch(err){ toast('В базу не сохранилось: ' + err.message, 'err'); return false; }
     S.dirty = false;
-    if(!S.hCamp){
+    /* Файла под рукой нет — или он лежит на сервере. Во втором случае его
+       обновит сам сервер: db.pull() вклеивает свежий CAMP в landing.html,
+       как только видит новую версию в базе (mirrorLanding в db.mjs).
+       Слать разметку отсюда значило бы делать ту же работу вторыми руками
+       и по дороге затирать чужие правки вёрстки. */
+    if(!S.hCamp || S.hCamp.srv){
       S.html = out;
       if(!auto) toast('Сохранено в базу — телефоны обновятся сами');
       return true;
@@ -956,6 +973,9 @@ async function saveLanding(auto){
     S.html = out;
     return true;
   }
+
+  /* Лендинг лежит на сервере — шлём данные, не файл. */
+  if(S.hCamp && S.hCamp.srv) return saveCampToServer(auto);
 
   if(!S.hCamp){
     if(auto) return false;                                   // автосохранение никогда не открывает диалогов
@@ -1314,14 +1334,7 @@ async function signOut(why){
 /* Кто вошёл — по мнению сервера. Нужно для лагеря БЕЗ базы: там вход
    подтверждает кука, а она HttpOnly и скрипту не видна. Вернёт null,
    если не вошли или сервера рядом нет вовсе. */
-async function serverWho(){
-  try{
-    const r = await fetch('whoami', { cache:'no-store' });
-    if(!r.ok) return null;
-    const me = await r.json();
-    return me && me.role ? me : null;
-  }catch(_){ return null }
-}
+
 
 async function gateBoot(){
   /* Ни users.json, ни папка панели не нужны: с базой и данные, и права

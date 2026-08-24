@@ -28,6 +28,9 @@ import os   from 'node:os';
    как раньше. Читает он по-прежнему из файлов: при включённой базе
    это зеркало, которое обновляет server.mjs. */
 import * as db from './db.mjs';
+/* Содержимое лагеря разбираем общей функцией: своя копия регулярки
+   разошлась бы с сервером молча — бот отвечал бы вчерашним расписанием. */
+import { parseCamp } from './camp.mjs';
 
 const ROOT      = import.meta.dirname;
 const PORT      = Number(process.env.CAMP_PORT) || 8000;
@@ -107,12 +110,6 @@ function cached(file, parse, def){
   };
 }
 
-/* тот же приём, что в админке: содержимое страницы — один литерал CAMP */
-export function parseCamp(html){
-  const m = html.match(/const CAMP\s*=\s*\{[\s\S]*?\n\};/);
-  if (!m) throw new Error('в landing.html не найден блок const CAMP={…};');
-  return new Function('return (' + m[0].slice(m[0].indexOf('{'), -1) + ')')();
-}
 
 const readCamp    = cached('landing.html',      parseCamp,      null);
 const readPeople  = cached('participants.json', t => JSON.parse(t) || [], []);

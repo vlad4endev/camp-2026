@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { upsert, configured } from '../db.mjs';
+import { parseCamp } from '../camp.mjs';
 
 const ROOT = process.env.CAMP_ROOT || process.cwd();
 const DRY  = process.argv.includes('--dry');
@@ -29,16 +30,11 @@ const read = (n, fallback) => {
 
 const say = (...a) => console.log(...a);
 
-/* ── Блок CAMP из лендинга ────────────────────────────────────────
-   Тем же приёмом, что server.mjs и админка: литерал вырезаем
-   регуляркой и исполняем как выражение. Файл свой, доверять можно. */
-function campFromLanding(){
-  const src = fs.readFileSync(F('landing.html'), 'utf8');
-  const m = src.match(/const CAMP\s*=\s*\{[\s\S]*?\n\};/);
-  if (!m) throw new Error('в landing.html не нашёлся блок const CAMP');
-  const body = m[0].slice(m[0].indexOf('{'), -1);
-  return new Function('return (' + body + ')')();
-}
+/* ── Блок CAMP из лендинга ───────────────────────────
+   Разбор общий с server.mjs и bots.mjs (camp.mjs). Здесь это особенно
+   важно: перенос выполняют один раз, и разошедшаяся копия увезла бы в
+   базу обрезанное расписание — а сверить было бы уже не с чем. */
+const campFromLanding = () => parseCamp(fs.readFileSync(F('landing.html'), 'utf8'));
 
 /* ── Участники и взносы ───────────────────────────────────────────
    Взносы уезжают в свою таблицу. id придумываем здесь, если его не

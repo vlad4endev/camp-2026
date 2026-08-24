@@ -9,13 +9,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" media="print" onload="this.media='all'"
       href="https://fonts.googleapis.com/css2?family=Manrope:wght@700;800&family=Inter:wght@400;500;600;700&display=swap">
+<!-- Палитра общая (camp-ui.css) — «одна семья, не три проекта» теперь
+     не пожелание в комментарии, а один файл на всех. Здесь остаётся
+     своё: за стойкой смотрят с вытянутой руки и тыкают пальцем. -->
+<link rel="stylesheet" href="camp-ui.css">
 <style>
-/* Токены те же, что в штабе и на лендинге: одна семья, не три проекта.
-   Размеры крупнее: за стойкой смотрят с вытянутой руки и тыкают пальцем. */
 :root{
-  --bg:#F3F6F4; --panel:#fff; --line:#E2EAE5; --line2:#D3DED7;
-  --ink:#0C1711; --mut:#5F7568; --acc:#2A6B3E; --acc2:#48B873; --accw:#E9F6ED;
-  --warn:#D9940A; --warnw:#FFF6E6; --err:#E5533C; --errw:#FFF0EC;
   --r:14px; --sh:0 1px 2px rgba(11,23,16,.05),0 8px 24px rgba(11,23,16,.06);
   --dsp:'Manrope',-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;
   --ease:cubic-bezier(.22,.61,.36,1);
@@ -249,7 +248,7 @@ button:disabled{opacity:.42;cursor:not-allowed}
    слой: он закрывает стойку от того, кто подошёл к чужому ноутбуку.
    ═══════════════════════════════════════════════════════════════ */
 
-const $  = (s,r=document) => r.querySelector(s);
+
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pad = n => String(n).padStart(2,'0');
 const nowLocal = () => { const d = new Date();
@@ -257,16 +256,9 @@ const nowLocal = () => { const d = new Date();
 const today = () => nowLocal().slice(0,10);
 const money = n => (Number(n)||0).toLocaleString('ru-RU') + ' ₽';
 const digits = s => String(s||'').replace(/\D/g,'');
-function plural(n,f){ const a=Math.abs(n)%100, b=a%10;
-  if(a>10&&a<20) return f[2]; if(b>1&&b<5) return f[1]; if(b===1) return f[0]; return f[2]; }
 
-function toast(text, kind){
-  const el = document.createElement('div');
-  el.className = 'toast' + (kind ? ' ' + kind : '');
-  el.textContent = text;
-  $('#toasts').append(el);
-  setTimeout(() => el.remove(), 2800);
-}
+
+
 
 /* ── МОДЕЛЬ УЧАСТНИКА ────────────────────────────────────────
    Один в один с admin.html: это один и тот же файл. Меняете там —
@@ -364,6 +356,9 @@ function visible(people, q, filter){
      разъехавшийся между панелями, означал бы разное поведение на одних
      и тех же данных. Нет файла или не настроена база — страница
      работает по-старому, на participants.json. -->
+<!-- Общий слой панелей: помощники DOM, плашки, файл на сервере.
+     Раньше это лежало копией в каждой странице и тихо расходилось. -->
+<script src="camp-ui.js"></script>
 <script src="camp-db.js"></script>
 
 <script>
@@ -398,9 +393,14 @@ const idb = {
    createWritable(). Тогда push(), pull() и защита от гонок работают без
    правок. Читаем GET, пишем PUT на порт панели.
 
-   Двадцать строк дублируются с admin.html намеренно: обе панели —
-   самостоятельные файлы без сборки, и общий .js стоил бы лишнего запроса
-   там, где важнее, чтобы страница открывалась одна и целиком. */
+   Эти двадцать строк раньше дублировались с admin.html намеренно: общий
+   .js стоил бы лишнего запроса, а страница должна открываться целиком.
+   Довод перестал держаться, когда рядом появился camp-db.js: запрос уже
+   есть, и второй ничего не добавляет. А расплата за копию оказалась не
+   теоретической — плашка держалась 2600 мс в штабе и 2800 здесь, потому
+   что поправили в одном файле из двух.
+
+   Теперь общее лежит в camp-ui.js. Здесь остаётся то, что у стойки своё. */
 /* По протоколу, а не по имени хоста: страницу отдали по http(s) — значит
    сервер рядом и запись идёт через него, с проверкой роли по куке. На
    ноутбуке это убирает выбор папки руками, за которым не стояло никакой
@@ -408,29 +408,6 @@ const idb = {
    File System Access API. Подробный разбор — в admin.html. */
 const ONSRV = /^https?:$/.test(location.protocol);
 
-function srvFile(name){
-  return { kind:'file', name,
-    async getFile(){
-      const r = await fetch(name + '?t=' + Date.now(), { cache:'no-store' });
-      if(!r.ok) throw new Error(name + ': HTTP ' + r.status);
-      const text = await r.text();
-      return { name, lastModified: Number(r.headers.get('X-Mtime')) || 0,
-               text: async () => text };
-    },
-    async createWritable(){
-      let buf = '';
-      return {
-        write: async t => { buf += t; },
-        close: async () => {
-          const r = await fetch(name, { method:'PUT', body: buf });
-          if(r.ok) return;
-          let why = '';
-          try{ why = (await r.json()).error || ''; }catch(_){}
-          // Громко: иначе ресепшен считал бы оплату записанной, а её нет
-          throw new Error('сервер не принял ' + name + ': ' + (why || 'HTTP ' + r.status));
-        } };
-    } };
-}
 
 /* Право на запись просим только по нажатию — браузер иначе откажет.
    Без права страница работает как справочник: искать можно, менять нет. */
@@ -917,14 +894,7 @@ async function start(){
 
 /* Кто вошёл — по мнению сервера. Для лагеря БЕЗ базы: вход подтверждает
    кука, а она HttpOnly и скрипту не видна. */
-async function serverWho(){
-  try{
-    const r = await fetch('whoami', { cache:'no-store' });
-    if(!r.ok) return null;
-    const me = await r.json();
-    return me && me.role ? me : null;
-  }catch(_){ return null }
-}
+
 
 async function boot(){
   /* База — единственный источник и списка участников, и прав. Роль

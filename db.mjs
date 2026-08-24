@@ -27,6 +27,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+/* Склейка данных в лендинг — общая с server.mjs и bots.mjs (camp.mjs).
+   Своя копия регулярки здесь означала бы, что зеркало и сервер по-разному
+   понимают, где кончается блок CAMP. */
+import { injectCamp } from './camp.mjs';
 
 const URL_   = process.env.SUPABASE_URL || '';
 const KEY    = process.env.SUPABASE_SERVICE_KEY || '';
@@ -134,6 +138,37 @@ export function toRow(obj){
   return out;
 }
 
+/* ЗЕРКАЛО ДОХОДИТ И ДО ЛЕНДИНГА.
+
+   landing.html носит расписание внутри себя литералом CAMP — это не
+   дубликат от небрежности, а единственное, что видит телефон в лесу:
+   лендинг поставлен как PWA и обязан открыться без сети.
+
+   Пока штаб правил расписание в базе, этот литерал не обновлял никто.
+   Онлайн всё выглядело верно — телефон спрашивал GET /camp и получал
+   свежее из зеркала. А тот, кто открыл страницу офлайн, читал расписание
+   того дня, когда поставил её себе, и отличить одно от другого не мог.
+
+   Поэтому обновляем здесь, а не в панели: в базу можно попасть с планшета,
+   из второй панели и напрямую из Supabase, и в каждом из этих путей
+   отдельно вспоминать про файл — значит однажды не вспомнить.
+
+   Не вышло (нет файла, права, идёт правка) — молчим: зеркало данных уже
+   записано, а лендинг подтянется на следующем круге. Ронять синхронизацию
+   из-за офлайн-копии нельзя.                                            */
+function mirrorLanding(doc){
+  const f = path.join(ROOT, 'landing.html');
+  try {
+    const html = fs.readFileSync(f, 'utf8');
+    const out  = injectCamp(html, doc);
+    /* Сравниваем результат, а не версию: штаб, у которого файл под рукой,
+       уже мог записать ровно это. Лишняя запись сдвинула бы время файла —
+       и его же панель на следующем сохранении получила бы «файл изменился
+       на диске», хотя изменила его сама. */
+    if (out !== html) writeAtomic(f, out);
+  } catch (_) {}
+}
+
 /* ── 4. ЧТЕНИЕ: всегда из зеркала ─────────────────────────────────*/
 
 export const people  = () => { const a = readJson(PEOPLE, []); return Array.isArray(a) ? a : [] };
@@ -164,7 +199,10 @@ export async function pull(){
                           room:r.room || '', cls:r.cls, at:r.at })), null, 2));
 
     const c = content && content[0];
-    if (c) writeAtomic(CAMP, JSON.stringify({ v: c.version, camp: c.doc }, null, 2));
+    if (c && c.version !== (camp() || {}).v){
+      writeAtomic(CAMP, JSON.stringify({ v: c.version, camp: c.doc }, null, 2));
+      mirrorLanding(c.doc);
+    }
 
     state = { online:true, at: Date.now(), err:'' };
     return true;

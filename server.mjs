@@ -42,6 +42,9 @@ import { createHash, randomBytes } from 'node:crypto';
    как раньше: переезд включается по одной машине. Подробности в db.mjs. */
 import * as db from './db.mjs';
 import * as auth from './auth.mjs';
+/* Блок CAMP из лендинга: разбор, запись и версия. Одна регулярка на
+   server.mjs, bots.mjs и панели — см. camp.mjs. */
+import { CAMP_RE, campOf, injectCamp, selftest as campSelftest } from './camp.mjs';
 
 /* import.meta.dirname появился в Node 20.11. На Debian 12 и Ubuntu 24.04
    `apt install nodejs` ставит 18.x — там ROOT молча станет undefined, и
@@ -71,7 +74,12 @@ const PORT = Number(process.argv.find(a => /^\d+$/.test(a))) || 8000;
    RLS. Из-за этого они видны и телефонам в лагерной Wi-Fi — решено
    осознанно: смотреть там нечего. */
 const PUBLIC_FILES = new Set(['landing.html', 'sw.js', 'manifest.webmanifest',
-                              'enter.html', 'camp-db.js']);
+                              'enter.html', 'camp-db.js',
+                              /* общий слой панелей: дверь просит их до входа,
+                                 то есть тогда, когда роли ещё нет. Секретов
+                                 в них столько же, сколько в camp-db.js, —
+                                 нисколько: помощники DOM, плашки и палитра. */
+                              'camp-ui.js', 'camp-ui.css']);
 const PUBLIC_DIRS  = new Set(['icons']);
 
 /* ЗЕРКАЛА БАЗЫ наружу не отдаются НИКОМУ, включая штаб, — но только когда
@@ -392,8 +400,8 @@ function writeSignups(list){
   fs.renameSync(SIGN + '.tmp', SIGN);
 }
 
-/* Мастер-классы и лимиты живут в лендинге — там их правит админка.
-   Разбираем тем же приёмом, что и админка, и держим до правки файла. */
+/* Мастер-классы и лимиты живут в лендинге — там их правит штаб через
+   PUT /camp. Разбор общий (camp.mjs), кэш держим до правки файла. */
 let campCache = { mt:0, v:'', camp:null };
 export function campData(){
   /* С единой базой содержимое лагеря приходит из camp.json — зеркала,
@@ -408,12 +416,7 @@ export function campData(){
   try {
     const mt = fs.statSync(f).mtimeMs;
     if (mt !== campCache.mt){
-      const m = fs.readFileSync(f, 'utf8').match(/const CAMP\s*=\s*\{[\s\S]*?\n\};/);
-      const src = m[0].slice(m[0].indexOf('{'), -1);
-      /* Версия — хэш самого литерала, а не файла: правка вёрстки не должна
-         заставлять полсотни телефонов перерисовываться на ровном месте. */
-      campCache = { mt, v: createHash('sha256').update(src).digest('hex').slice(0, 12),
-                    camp: new Function('return (' + src + ')')() };
+      campCache = { mt, ...campOf(fs.readFileSync(f, 'utf8')) };
     }
   } catch (err) { /* лендинг правят прямо сейчас — живём на прошлом разборе */ }
   return campCache;
@@ -433,11 +436,11 @@ function meAnswer(person, list, people){
            mine, locked: org, seats: seatsOf(campClasses(), list, people) };
 }
 
-function body(req, res, send, done){
+function body(req, res, send, done, max = 2048){
   let text = '';
   req.on('data', c => {
     text += c;
-    if (text.length > 2048) { send(413, 'Слишком большая запись'); req.destroy(); }
+    if (text.length > max) { send(413, 'Слишком большая запись'); req.destroy(); }
   });
   req.on('end', () => {
     if (res.writableEnded) return;
@@ -548,8 +551,23 @@ function camp(send, was){
 
    JSON проверяем разбором до записи: битый participants.json хуже
    отсутствующего — сервер сочтёт его пустым и начнёт отвечать «нет
-   такого номера» всем участникам сразу. */
-const WRITABLE = new Set(['landing.html', 'participants.json',
+   такого номера» всем участникам сразу.
+
+   LANDING.HTML ИЗ СПИСКА УБРАН. Панель его больше не пишет: расписание
+   уезжает данными через PUT /camp, а разметку она не правит вовсе.
+   Пока имя оставалось здесь, маршрут жил без единого пользователя — и
+   ровно этим был опасен. Достаточно одной старой вкладки, одного
+   недоделанного скрипта или одной куки, пережившей смену роли, чтобы
+   295 КБ чужой разметки легли поверх страницы лагеря; отличить такую
+   запись от законной было бы нечем, потому что законных не осталось.
+
+   Разметку правит человек через git — как server.mjs, sw.js и bots.mjs.
+
+   'camp' в списке — НЕ ФАЙЛ, а имя права: «можно менять содержимое
+   лагеря». Держим его здесь, а не отдельной таблицей, потому что две
+   таблицы «кому что можно» разошлись бы ровно так же, как расходились
+   четыре копии разбора CAMP. put() это имя не примет — см. ниже. */
+const WRITABLE = new Set(['camp', 'participants.json',
                           'integrations.json']);
 
 /* СТОЙКА — отдельный пропуск с отдельным паролем. Раздельные пароли сами
@@ -566,8 +584,8 @@ const WRITABLE = new Set(['landing.html', 'participants.json',
    Auth, пароли в папке лагеря не лежат вовсе. Раньше файл приходилось
    отдавать стойке — вход шёл по нему, — и это была единственная причина
    держать хэши там, где их видит ресепшен. Причина ушла вместе с файлом. */
-const DESK_READ  = new Set(['reception.html', 'camp-db.js', 'enter.html',
-                            'participants.json']);
+const DESK_READ  = new Set(['reception.html', 'camp-db.js', 'camp-ui.js',
+                            'camp-ui.css', 'enter.html', 'participants.json']);
 const DESK_WRITE = new Set(['participants.json']);
 
 /* ЧЕТЫРЕ РОЛИ ИЗ ТАБЛИЦЫ staff, а не две. Пока роль определялась портом,
@@ -584,15 +602,17 @@ const DESK_WRITE = new Set(['participants.json']);
 const READ = {
   public:  null,
   panel:   null,                                   // 'panel' — это admin из staff
-  lead:    new Set(['admin.html', 'reception.html', 'camp-db.js', 'enter.html',
+  lead:    new Set(['admin.html', 'reception.html', 'camp-db.js', 'camp-ui.js',
+                    'camp-ui.css', 'enter.html',
                     'landing.html', 'participants.json', 'signups.json']),
-  content: new Set(['admin.html', 'camp-db.js', 'enter.html', 'landing.html']),
+  content: new Set(['admin.html', 'camp-db.js', 'camp-ui.js', 'camp-ui.css',
+                    'enter.html', 'landing.html']),
   desk:    DESK_READ,
 };
 const WRITE = {
   panel:   WRITABLE,
-  lead:    new Set(['landing.html', 'participants.json']),
-  content: new Set(['landing.html']),
+  lead:    new Set(['camp', 'participants.json']),
+  content: new Set(['camp']),
   desk:    DESK_WRITE,
 };
 
@@ -609,7 +629,9 @@ export function canRead(role, rel){
   const only = READ[role];
   return only === null || only.has(rel);
 }
-const MAX_PUT  = 4 * 1024 * 1024;              // лендинг ~310 КБ, запас большой
+/* Самое крупное, что сюда теперь приходит, — participants.json: он растёт
+   вместе с лагерем. Лендинг ушёл на PUT /camp и весит там ~12 КБ. */
+const MAX_PUT  = 4 * 1024 * 1024;
 
 function put(req, res, send, role = 'panel'){
   /* Имя берём из маршрута целиком, а не basename: тот срезал бы путь и
@@ -617,6 +639,12 @@ function put(req, res, send, role = 'panel'){
      равно не выводит (join с ROOT), но поведение должно совпадать с
      canWrite() из проверок, а не «случайно быть безопасным». */
   const name = req.url.split('?')[0].replace(/^\//, '');
+  /* 'camp' — имя права, а не файла (см. WRITABLE). Сюда оно попасть не
+     должно: маршрут /camp перехвачен выше и уходит в putCamp. Но если
+     перехват однажды снимут или переставят, put() послушно создал бы в
+     папке лагеря файл с именем camp — и расписание молча перестало бы
+     доезжать до телефонов, потому что склеивать его стало бы некуда. */
+  if (name === 'camp') return send(404, 'Не найдено');
   if (!canWrite(name, role))
     return send(403, JSON.stringify({ ok:false, error:'not_writable', name }), JSONT);
 
@@ -647,6 +675,57 @@ function put(req, res, send, role = 'panel'){
     snapFile(name);                            // участники и лендинг — в backups/
     send(200, JSON.stringify({ ok:true, bytes: Buffer.byteLength(text) }), JSONT);
   });
+}
+
+/* ── 3.72 Содержимое лагеря (PUT /camp) ────────────────────────
+
+   ОДИН ПУТЬ ЗАПИСИ. Раньше штаб правил расписание так: качал landing.html
+   целиком (295 КБ), вырезал у себя в браузере блок CAMP своей регуляркой,
+   вставлял обратно своей же — и клал файл назад через PUT /landing.html.
+   Сервер, боты и дверь тем временем вырезали тот же блок ещё тремя
+   копиями того же выражения.
+
+   Четыре копии — четыре способа разойтись, причём тихо: разошедшаяся
+   регулярка не падает, она возвращает вчерашние данные, которые выглядят
+   как сегодняшние. И цена правки вёрстки была та же: панель присылала
+   обратно весь файл, поэтому старая вкладка, открытая до правки разметки,
+   затирала эту разметку своей копией.
+
+   Теперь панель присылает ТОЛЬКО данные. Разметку она не трогает вовсе —
+   значит и затереть не может, а склейка живёт в одном месте (camp.mjs).
+
+   Права те же, что на landing.html: это он и есть, вид сбоку. Отдельного
+   разрешения не заводим — два списка прав на один файл разошлись бы ровно
+   так же, как разошлись четыре регулярки.                                */
+const MAX_CAMP = 256 * 1024;                   // блок CAMP ~12 КБ, запас большой
+
+function putCamp(req, res, send, role){
+  if (!canWrite('camp', role))
+    return send(403, JSON.stringify({ ok:false, error:'not_writable', name:'camp' }), JSONT);
+
+  body(req, res, send, doc => {
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc))
+      return send(400, JSON.stringify({ ok:false, error:'bad' }), JSONT);
+    const f = path.join(ROOT, 'landing.html');
+    let out;
+    try { out = injectCamp(fs.readFileSync(f, 'utf8'), doc); }
+    catch (err) { return send(500, JSON.stringify({ ok:false, error:err.message }), JSONT) }
+    try {
+      fs.writeFileSync(f + '.tmp', out);        // .tmp + rename: телефон не должен
+      fs.renameSync(f + '.tmp', f);             // прочитать файл на середине записи
+    } catch (err) {
+      return send(500, JSON.stringify({ ok:false, error:err.message }), JSONT);
+    }
+    snapFile('landing.html');
+    /* Версию считаем из того, что легло на диск, а не из присланного:
+       телефон сравнивает её с ответом GET /camp, и разойтись эти два
+       числа не должны никогда. */
+    /* Отдаём и время файла: панель сверяет по нему чужие правки, а
+       перечитывать ради одного числа 295 КБ разметки незачем. */
+    let mt = 0;
+    try { mt = Math.round(fs.statSync(f).mtimeMs); } catch (_) {}
+    send(200, JSON.stringify({ ok:true, v: campData().v, mt }), JSONT);
+  }, MAX_CAMP);
 }
 
 /* ── 3.75 Вход (GET /dbconfig, POST /session) ──────────────────
@@ -900,6 +979,7 @@ function serve(req, res, portRole = 'public'){
     return camp(send, new URL(req.url, 'http://x').searchParams.get('v'));
   if (req.method === 'PUT'){
     if (!local) return send(405, 'Только GET');   // публичный порт не пишет никогда
+    if (route === '/camp') return putCamp(req, res, send, role);
     return put(req, res, send, role);
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, 'Только GET');
@@ -1045,6 +1125,36 @@ function selftest(){
   a(!P('users.json'),                                   'хэши паролей в лагерную Wi-Fi не уходят');
   a(!P('integrations.json'),                            'токены ботов в лагерную Wi-Fi не уходят');
   a(!P('участники.json'),                              'новый файл закрыт по умолчанию');
+
+  /* ОБЩИЙ СЛОЙ ПАНЕЛЕЙ ДОЛЖЕН ДОЕЗЖАТЬ ДО ВСЕХ ЧЕТЫРЁХ РОЛЕЙ.
+     Забыть роль в списке — не поломка, а страница, у которой пропали
+     плашки и половина кнопок, и в консоли одна строка про 404. Проверка
+     дешевле, чем выяснять это на стойке в день заезда. */
+  /* ДВЕ КОПИИ РАЗБОРА CAMP — И БОЛЬШЕ НЕ ДОЛЖНО БЫТЬ.
+     Одна в camp.mjs (сервер и боты), одна в camp-ui.js (штаб и стойка).
+     Свести их в одну нельзя: <script> не умеет ESM без сборки, а страницы
+     обязаны открываться двойным щелчком. Значит остаётся сверять.
+
+     Именно так четыре копии и разъезжались — не ломаясь, а начиная
+     отвечать разным. Разошедшийся разбор не падает: он молча отдаёт
+     кусок расписания вместо всего, и заметно это станет в лагере.
+
+     Сравниваем исходник выражения, а не поведение: поведение совпадает на
+     тех примерах, которые придумал автор, а исходник — на всех. */
+  {
+    const ui = fs.readFileSync(path.join(ROOT, 'camp-ui.js'), 'utf8');
+    const m  = ui.match(/const CAMP_RE = (\/.*\/);/);
+    a(!!m,                                                'camp-ui.js: выражение CAMP_RE на месте');
+    a(!!m && m[1] === CAMP_RE.toString(),
+                                                          'разбор CAMP в браузере и на сервере совпадает');
+  }
+
+  for (const f of ['camp-ui.js', 'camp-ui.css', 'camp-db.js']){
+    a(P(f),                                             f + ' отдаётся до входа (дверь)');
+    a(['panel','lead','content','desk'].every(r => canRead(r, f)),
+                                                        f + ' виден всем четырём ролям');
+    a(!canWrite(f) && !canWrite(f, 'desk'),              f + ' через PUT не правится');
+  }
   /* стык двух проверок: белый список смотрит на РАЗРЕШЁННЫЙ путь, поэтому
      ../ из разрешённой папки не открывает доступ к соседнему файлу */
   a(!P('signups.json') && !P('signups.json.tmp'),      'записи на МК наружу не отдаются');
@@ -1061,8 +1171,14 @@ function selftest(){
      every отдаёт индекс, и роль стала бы числом. Раньше это сходило —
      «любая роль, кроме desk» означало штаб; теперь роль не из списка
      это отказ, и ошибка перестала быть незаметной. */
-  a(['landing.html','participants.json','integrations.json'].every(n => canWrite(n)),
-                                                        'панель пишет свои три файла');
+  a(['camp','participants.json','integrations.json'].every(n => canWrite(n)),
+                                                        'панель правит расписание и свои два файла');
+  /* ГЛАВНОЕ ПОСЛЕ ПЕРЕЕЗДА НА PUT /camp. Разметку страницы лагеря не
+     перезаписывает больше НИ ОДНА роль: панель шлёт только данные, а
+     склейку делает сервер. Маршрут без пользователей — маршрут, которым
+     воспользуется кто угодно другой. */
+  a(['panel','lead','content','desk','public'].every(r => !canWrite('landing.html', r)),
+                                                        'landing.html через PUT не пишет никто');
   /* Вход переехал в Supabase Auth: файла с хэшами больше нет, и записать
      его через PUT нельзя — иначе он бы вернулся вторым списком доступа. */
   a(!canWrite('users.json') && !canWrite('users.json','desk'),
@@ -1089,10 +1205,10 @@ function selftest(){
   a(['admin.html','landing.html','integrations.json'].every(n => canRead('panel', n)),
                                                         'штабу видно всё своё');
   a(canWrite('participants.json','desk'),               'стойка правит участников');
-  a(['landing.html','integrations.json'].every(n => !canWrite(n,'desk')),
-                                                        'стойка не правит ни лендинг, ни токены');
-  a(canWrite('landing.html','panel') && canWrite('landing.html'),
-                                                        'штаб правит лендинг, роль по умолчанию — штаб');
+  a(['camp','landing.html','integrations.json'].every(n => !canWrite(n,'desk')),
+                                                        'стойка не правит ни расписание, ни токены');
+  a(canWrite('camp','panel') && canWrite('camp'),
+                                                        'штаб правит расписание, роль по умолчанию — штаб');
 
   /* ── ЧЕТЫРЕ РОЛИ ИЗ staff ──
      Пока роль была портом, «вожатый» и «редактор» получали весь штаб:
@@ -1104,15 +1220,15 @@ function selftest(){
                                                         'редактору видна страница лагеря');
   a(['participants.json','signups.json','integrations.json']
       .every(n => !canRead('content', n)),              'редактору личные данные не видны');
-  a(canWrite('landing.html','content') && !canWrite('participants.json','content'),
-                                                        'редактор правит лендинг, но не людей');
+  a(canWrite('camp','content') && !canWrite('participants.json','content'),
+                                                        'редактор правит расписание, но не людей');
   a(canWrite('participants.json','lead') && !canWrite('integrations.json','lead'),
                                                         'вожатый правит людей, но не токены');
   /* Роль не из таблицы — отказ, а не «на всякий случай можно». Раньше
      canWrite() отдавал штаб всему, что не 'desk', включая опечатку. */
   /* undefined в список не входит намеренно: это «аргумент не передали», и
      там срабатывает роль по умолчанию — штаб (проверка выше). */
-  a(['КОРОЛЬ','','public',null,0].every(r => !canWrite('landing.html', r)),
+  a(['КОРОЛЬ','','public',null,0].every(r => !canWrite('camp', r)),
                                                         'выдуманная роль не пишет ничего');
   a(['КОРОЛЬ','',null,undefined].every(r => !canRead(r, 'admin.html')),
                                                         'выдуманная роль не читает ничего');
@@ -1313,11 +1429,74 @@ async function smoke(){
   a([403, 404].includes(await hit('/icons/%2e%2e/%2e%2e/etc/passwd')),
                                                         'из разрешённой папки тоже не выйти');
 
+  /* Запись данных лагеря. Роль 'public' — та, с которой сюда приходит
+     интернет: он не пишет ничего и никогда, включая этот маршрут. 403, а
+     не 404: маршрут существует, просто не для него. */
+  a(await hit('/camp', { method:'PUT', body:'{\"year\":1999}' }) === 403,
+                                                        'PUT /camp без прав не пишет');
+
+  /* СКВОЗНАЯ ПРОВЕРКА ЗАПИСИ. Роль 'panel' — та, с которой работает штаб.
+     Проверяем не «ответил 200», а то, ради чего маршрут существует: доехали
+     ли данные целыми и отдаёт ли их GET /camp тем же, чем принял PUT.
+
+     Пишем в настоящий landing.html — другого тут нет, ROOT прибит к папке
+     файла. Поэтому запоминаем байты до и кладём обратно в finally: проверка
+     не должна оставлять после себя переформатированный лендинг, даже если
+     упала посередине. */
+  const panel = http.createServer((req, res) => serve(req, res, 'panel'));
+  await new Promise(ok => panel.listen(0, '127.0.0.1', ok));
+  const pbase = 'http://127.0.0.1:' + panel.address().port;
+  const LAND  = path.join(ROOT, 'landing.html');
+  const was   = fs.readFileSync(LAND);
+  try {
+    const before = await (await fetch(pbase + '/camp')).json();
+    const doc    = { ...before.camp, place: 'Проверка · $& и $1' };
+
+    const put = await fetch(pbase + '/camp', { method:'PUT',
+      headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(doc) });
+    a(put.status === 200,                                 'PUT /camp с правами пишет');
+    const ans = await put.json();
+    a(ans.ok === true && !!ans.v && !!ans.mt,             'ответ несёт версию и время файла');
+    a(ans.v !== before.v,                                 'версия сменилась — телефоны обновятся');
+
+    const after = await (await fetch(pbase + '/camp')).json();
+    a(after.v === ans.v,                                  'GET /camp отдаёт ту же версию, что вернул PUT');
+    a(after.camp.place === 'Проверка · $& и $1',          'данные доехали дословно, $& не съеден');
+    a(JSON.stringify({ ...after.camp, place:0 }) === JSON.stringify({ ...before.camp, place:0 }),
+                                                          'остальное расписание не задето');
+    /* Главное, ради чего панель перестала слать файл целиком. */
+    a(fs.readFileSync(LAND, 'utf8').includes('<!DOCTYPE html>'),
+                                                          'разметка лендинга на месте');
+
+    a([400, 403].includes(await (await fetch(pbase + '/camp', { method:'PUT', body:'[]' })).status),
+                                                          'массив вместо расписания отбит');
+    a([400, 403].includes(await (await fetch(pbase + '/camp', { method:'PUT', body:'не json' })).status),
+                                                          'мусор вместо расписания отбит');
+
+    /* МАРШРУТА PUT /landing.html БОЛЬШЕ НЕТ — и проверяем это с ролью
+       штаба, то есть с самыми широкими правами в системе. Проверка с
+       ролью public ничего бы не значила: ей и раньше было нельзя. */
+    const kill = '<html>всё стёрли</html>';
+    a((await fetch(pbase + '/landing.html', { method:'PUT', body: kill })).status === 403,
+                                                          'PUT /landing.html закрыт даже для штаба');
+    a(!fs.readFileSync(LAND, 'utf8').includes('всё стёрли'),
+                                                          'разметка от отбитого PUT не пострадала');
+
+    /* 'camp' — имя права, а не файла. Если оно однажды доедет до put(),
+       в папке лагеря появится файл camp, и склеивать расписание станет
+       некуда. Сюда его не пускает отдельная строка в put(). */
+    a(!fs.existsSync(path.join(ROOT, 'camp')),             'имя права не превратилось в файл');
+  } finally {
+    fs.writeFileSync(LAND, was);                          // вернули байт в байт
+    panel.close();
+  }
+  a(fs.readFileSync(LAND).equals(was),                    'проверка вернула лендинг как был');
+
   srv.close();
   console.log('');
 }
 
-if (process.argv.includes('--selftest')) { selftest(); await smoke(); }
+if (process.argv.includes('--selftest')) { selftest(); campSelftest(); await smoke(); }
 else {
   watchPeople();
   /* Тянем зеркало из базы и досылаем очередь. Без SUPABASE_URL функция
