@@ -201,8 +201,14 @@ async function session(payload){
   return d.role;
 }
 
+/* Метка «мы только что ушли отсюда». Если через мгновение нас вернуло
+   назад — значит, круг не сходится (кука не удержалась, воркер отдаёт
+   старую страницу), и уходить снова нельзя: получится бесконечное
+   мигание. Лучше остановиться и сказать, что именно не так. */
+const AGAIN = 'camp-enter-left';
 function leave(role){
   msg('');
+  try{ sessionStorage.setItem(AGAIN, String(Date.now())); }catch(_){}
   location.replace(HOME(role));
 }
 
@@ -241,6 +247,21 @@ $('#f').addEventListener('submit', async e => {
   catch (err) { msg(err.message); $('#go').disabled = true; return; }
   dressForm();
 
+  /* Предохранитель от петли: только что ушли в панель — и уже вернулись.
+     Автоматически уходить второй раз бессмысленно, круг не сойдётся.
+     Остаёмся на форме и говорим, что происходит; вход руками работает. */
+  let looped = false;
+  try {
+    looped = Date.now() - (+sessionStorage.getItem(AGAIN) || 0) < 3000;
+    sessionStorage.removeItem(AGAIN);
+  } catch (_) {}
+  if (looped) {
+    msg('Вход не удерживается: сервер пускает, но браузер тут же возвращает сюда. ' +
+        'Проверьте, не заблокированы ли куки для этого сайта, и обновите страницу с зажатым Shift.');
+    $('#email').focus();
+    return;
+  }
+
   /* Уже вошли — не показываем форму второй раз. Спрашиваем у сервера:
      куку он поставил HttpOnly, и скрипт её не видит. Без этого шага
      выходила бы петля — панель не видит входа и отправляет сюда, а
@@ -259,8 +280,18 @@ $('#f').addEventListener('submit', async e => {
   if (s && s.access) {
     let me = null;
     try { me = await CampDB.staffMe(); } catch (_) {}
-    if (me) { await session({ access: s.access }).catch(() => {}); return leave(me.role); }
-    CampDB.signOut();
+    /* Уходить можно только после того, как сервер подтвердил куку.
+       Раньше ошибка глоталась (.catch(() => {})) и уход происходил в
+       любом случае — если кука не удерживалась, выходила та самая
+       петля: дверь → панель → дверь. */
+    if (me) {
+      const ok = await session({ access: s.access }).then(() => true).catch(() => false);
+      if (ok) return leave(me.role);
+      CampDB.signOut();
+      msg('Сервер не подтвердил вход — попробуйте войти заново');
+    } else {
+      CampDB.signOut();
+    }
   }
   /* Почему выкинуло назад, если панель отправила сюда сама. */
   try {
