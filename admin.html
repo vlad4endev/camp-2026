@@ -368,9 +368,10 @@ const $$ = (s,r=document) => [...r.querySelectorAll(s)];
 
 const S = {
   html:'', camp:null, people:null, users:null,
-  hCamp:null, hPeople:null, hUsers:null, hDir:null,  // FileSystemFileHandle / DirectoryHandle, если браузер умеет
-  mtC:0, mtP:0, mtU:0,                      // время файлов на диске в момент чтения — для защиты от гонки
+  hCamp:null, hPeople:null, hUsers:null, hInteg:null, hDir:null,  // FileSystemFileHandle / DirectoryHandle, если браузер умеет
+  mtC:0, mtP:0, mtU:0, mtI:0,                      // время файлов на диске в момент чтения — для защиты от гонки
   me:null, usersMissing:false, uName:'users.json', uDirty:false, place:'',
+  integ:null, iName:'integrations.json', iDirty:false, iShow:{}, iTest:{},
   backed:{},                                // какие файлы уже забэкаплены в этой сессии
   name:'landing.html', pName:'participants.json',
   dirty:false, pDirty:false, savedAt:null, autosave:false,
@@ -474,6 +475,8 @@ const isPeople = p => p === 'people' || p.startsWith('people.');
 function rootOf(p){
   if(p === 'people') return [S, 'people'];
   if(p.startsWith('people.')) return [S.people, p.slice(7)];
+  if(p === 'integ') return [S, 'integ'];
+  if(p.startsWith('integ.')) return [S.integ, p.slice(6)];
   return [S.camp, p];
 }
 const getPath = p => { const [r,q] = rootOf(p); return q.split('.').reduce((o,k) => o[k], r); };
@@ -538,7 +541,8 @@ const idb = {
 
 /* ── 5. СОСТОЯНИЕ «СОХРАНЕНО / НЕТ» ─────────────────────────────── */
 function touched(path){
-  if(path && isPeople(path)) S.pDirty = true;
+  if(path && (path === 'integ' || path.startsWith('integ.'))) S.iDirty = true;
+  else if(path && isPeople(path)) S.pDirty = true;
   else { S.dirty = true; schedulePreview(); }
   saveDraft(); syncTop(); scheduleAutosave();
 }
@@ -548,7 +552,8 @@ function touched(path){
 function syncTop(){
   const has = !!(S.camp || S.people);
   // ровно те же условия, что в saveAll: «есть что сохранять» и «кнопка горит» не должны расходиться
-  const un  = (S.camp && S.dirty) || (S.people && S.pDirty) || (S.users && S.uDirty);
+  const un  = (S.camp && S.dirty) || (S.people && S.pDirty)
+            || (S.users && S.uDirty) || (S.integ && S.iDirty);
   const name = S.hDir ? S.hDir.name : S.camp ? S.name : S.pName;
 
   $('#topfile').innerHTML = has
@@ -887,6 +892,7 @@ async function saveAll(auto){
     if(S.camp   && S.dirty)  did = await saveLanding(auto) || did;
     if(S.people && S.pDirty) did = await savePeopleFile(auto) || did;
     if(S.users  && S.uDirty) did = await saveUsersFile(auto) || did;
+    if(S.integ  && S.iDirty) did = await saveIntegFile(auto) || did;
   }catch(err){ return toast('Не удалось сохранить: ' + err.message, 'err'); }
   if(did){
     S.savedAt = nowLocal().slice(11);
@@ -1003,6 +1009,91 @@ async function openUsers(){
     showGate();
   }catch(err){ gateErr(err.message); }
 }
+/* ── 7.6. ИНТЕГРАЦИИ: ТОКЕНЫ БОТОВ И ПРОКСИ ───────────────────
+
+   integrations.json — четвёртый служебный файл рядом с панелью.
+   В сеть он не уходит: у server.mjs белый список, и всё, чего в нём
+   нет, отдаётся как 404. Но на диске это обычный текст — тот, у кого
+   есть доступ к ноутбуку, прочитает токены. Отсюда правило: сюда
+   кладём только то, что не жалко перевыпустить (токен бота
+   отзывается у BotFather за минуту), и никогда — пароли людей.      */
+
+const INTEG_DEF = () => ({
+  telegram:{ on:false, token:'', bot:'', chat:'' },
+  max:     { on:false, token:'', bot:'' },
+  proxy:   { on:false, url:'' },
+});
+/* Из присланного BotFather текста вытаскиваем сам токен: удобнее
+   вставить письмо целиком, чем выкусывать строку глазами. */
+const TOKEN_RE = /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/;
+const grabToken = s => (String(s || '').match(TOKEN_RE) || [''])[0] || String(s || '').trim();
+const mask = t => { const v = String(t || ''); if(!v) return '';
+  return v.length < 12 ? '•'.repeat(v.length) : v.slice(0,4) + '•'.repeat(10) + v.slice(-4); };
+
+/* Прокси вводится одной строкой, как её дают провайдеры:
+   socks5://user:pass@host:1080 — а разбор показываем рядом,
+   чтобы опечатка была видна до того, как бот молча не запустится. */
+function parseProxy(url){
+  const raw = String(url || '').trim();
+  if(!raw) return null;
+  let u;
+  try{ u = new URL(raw.includes('://') ? raw : 'socks5://' + raw); }
+  catch(_){ return { err:'Не похоже на адрес прокси' }; }
+  const type = u.protocol.replace(':','').toLowerCase();
+  if(!['socks5','socks5h','socks4','http','https'].includes(type))
+    return { err:`Неизвестный тип «${type}» — нужен socks5, socks4 или http` };
+  if(!u.hostname) return { err:'Не указан адрес' };
+  const port = u.port || (type.startsWith('socks') ? '1080' : '8080');
+  return { type, host:u.hostname, port, user:decodeURIComponent(u.username || ''),
+           pass:u.password ? true : false };
+}
+
+function setInteg(text, name){
+  let o = null;
+  try{ o = JSON.parse(text); }catch(_){}
+  const d = INTEG_DEF();
+  S.integ = o && typeof o === 'object'
+    ? { telegram:{ ...d.telegram, ...(o.telegram || {}) },
+        max:     { ...d.max,      ...(o.max      || {}) },
+        proxy:   { ...d.proxy,    ...(o.proxy    || {}) } }
+    : d;
+  S.iName = name || 'integrations.json';
+  S.iDirty = false;
+}
+async function loadInteg(){
+  if(!/^https?:$/.test(location.protocol)) return;
+  try{
+    const r = await fetch('integrations.json', { cache:'no-store' });
+    if(r.status === 404){ S.integ = INTEG_DEF(); return; }   // файла нет — заведём при первом сохранении
+    if(!r.ok) return;
+    setInteg(await r.text(), 'integrations.json');
+  }catch(_){}
+}
+async function saveIntegFile(auto){
+  const out = JSON.stringify(S.integ, null, 2);
+  if(!S.hInteg && S.hDir){
+    try{ S.hInteg = await S.hDir.getFileHandle('integrations.json', { create:true }); }catch(_){}
+  }
+  if(!S.hInteg){
+    if(auto) return false;
+    const h = await pick(false, { suggestedName:S.iName, ...JSON_T });
+    if(h === 'abort' || !h){ saveBlob(out, S.iName, 'application/json'); S.iDirty = false; return true; }
+    S.hInteg = h;
+  }
+  const c = await conflict(S.hInteg, S.mtI, S.iName, auto);
+  if(c === 'cancel'){ if(auto) toast('Интеграции изменились на диске — автосохранение остановлено', 'err'); return false; }
+  if(c === 'reload'){
+    const f = await S.hInteg.getFile();
+    S.mtI = f.lastModified; setInteg(await f.text(), S.iName); render();
+    return false;
+  }
+  await ensureBackup('integ', S.hInteg, S.iName);
+  await writeTo(S.hInteg, out);
+  S.mtI = (await S.hInteg.getFile()).lastModified;
+  S.iDirty = false;
+  return true;
+}
+
 async function saveUsersFile(auto){
   const out = JSON.stringify(S.users, null, 2);
   if(!S.hUsers && S.hDir){                       // папка открыта — кладём файл в неё, без диалога
@@ -1165,7 +1256,7 @@ async function signOut(why){
 }
 
 async function gateBoot(){
-  await Promise.all([loadUsers(), gatePlace()]);
+  await Promise.all([loadUsers(), loadInteg(), gatePlace()]);
   let who = null;
   try{ who = sessionStorage.getItem(WHO); }catch(_){}
   const u = who && findUser(who);
@@ -1204,6 +1295,7 @@ const NAV = [
   ['rosters', 'Списки и печать', '⎙', 'people', 'Люди'],
   ['signs',   'Записи с телефонов', '↧', 'any',  'Люди'],
   ['access',  'Пользователи',     '⚿', 'any',    'Доступ'],
+  ['integr',  'Интеграции',       '⇄', 'any',    'Доступ'],
 ];
 /* Меню — это и есть список прав: чего роль не видит, того она и не откроет
    (A.view спрашивает ту же can()). Двух списков специально нет. */
@@ -1262,6 +1354,8 @@ const NAVICON = {
          + '<path d="M12 9.6v6.2"/><path d="M9.6 13.4 12 15.8l2.4-2.4"/>',
   access:  '<circle cx="7.6" cy="15.6" r="3.9"/><path d="M10.4 12.6 20.5 2.5"/>'
          + '<path d="M17.3 5.7 19.6 8"/><path d="M14.7 8.3l2 2"/>',
+  integr:  '<path d="M9 3v6"/><path d="M15 3v6"/><path d="M7.5 9h9v3.5a4.5 4.5 0 0 1-9 0V9Z"/>'
+         + '<path d="M12 17v4"/>',
 };
 const navSvg = k => NAVICON[k]
   ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
@@ -1869,7 +1963,9 @@ function tileCardHtml(list, i){
             </select></label>
           ${fInput(`classes.${i}.cap`,'Сколько человек берут', +t.cap || 0, 'number', 'min="0" step="1"')}
         </div>
-        <p class="hint">0 — без ограничения. Записи придут как <b>«${esc(ckey(t))}»</b> —
+        <p class="hint">${(() => { const n = takenIn(ckey(t)), cap = +t.cap || 0;
+            return n ? `Сейчас занято: <b>${n}</b>${cap ? ` из ${cap}` : ''}${
+              cap && n >= cap ? ' — мест больше нет, на лендинге группа закрыта' : ''}. ` : ''; })()}0 — без ограничения. Записи придут как <b>«${esc(ckey(t))}»</b> —
           день входит в имя, поэтому один и тот же мастер-класс в разные дни считается отдельно.
           ${S.people ? 'Сменить день или название у мастер-класса, на который уже записались, — значит потерять их записи.' : ''}</p>
       </div>
@@ -1954,6 +2050,76 @@ function viewTexts(){
         const val = g ? (S.camp.texts[g] || {})[k] : S.camp.texts[k];
         return long.has(k) ? fArea(path, fl, val, 2) : fInput(path, fl, val);
       }).join('') + `</div>`).join('');
+}
+
+/* ── ИНТЕГРАЦИИ ──────────────────────────────────────────────── */
+const iState = b => !b.token ? ['g','не заполнено'] : b.on ? ['','включено'] : ['g','выключено'];
+
+function secretField(path, label, val, key, hint){
+  const shown = !!S.iShow[key];
+  return `<label class="f"><span>${label}</span>
+    <div class="row" style="gap:6px;flex-wrap:nowrap">
+      <input data-path="${path}" ${shown ? '' : 'type="password"'} value="${esc(val)}"
+        autocomplete="off" spellcheck="false" style="flex:1;font-family:ui-monospace,Menlo,monospace;font-size:12.5px">
+      <button class="b-sm" data-act="ishow" data-k="${key}" title="${shown ? 'Скрыть' : 'Показать'}">${shown ? 'скрыть' : 'показать'}</button>
+      ${val ? `<button class="b-sm" data-act="icopy" data-k="${key}" title="Скопировать">копировать</button>` : ''}
+    </div>
+    ${hint ? `<p class="hint" style="margin-top:5px">${hint}</p>` : ''}
+    ${val && !shown ? `<p class="hint" style="margin-top:4px;font-family:ui-monospace,Menlo,monospace">${esc(mask(val))}</p>` : ''}
+  </label>`;
+}
+
+function viewIntegr(){
+  if(!S.integ) S.integ = INTEG_DEF();
+  const t = S.integ.telegram, m = S.integ.max, px = S.integ.proxy;
+  const pp = parseProxy(px.url);
+  const test = k => { const r = S.iTest[k]; return r
+    ? `<p class="hint" style="margin-top:6px;color:${r.ok ? 'var(--acc)' : 'var(--err)'};font-weight:600">${esc(r.msg)}</p>` : ''; };
+
+  return `<h2 class="vt">Интеграции</h2>
+    <p class="vs">Токены ботов и прокси. Хранятся в <code>${esc(S.iName)}</code> рядом с панелью.</p>
+    ${help('Куда это попадает',
+      'Файл лежит рядом с <code>admin.html</code> и в лагерную Wi-Fi не отдаётся: у сервера белый список, ' +
+      'всё, чего в нём нет, отвечает 404. Но на диске это обычный текст — у кого есть ноутбук, тот прочитает. ' +
+      'Поэтому здесь только то, что не жалко перевыпустить: токен бота отзывается у BotFather за минуту. ' +
+      'Пароли людей сюда не кладём никогда.')}
+
+    <div class="card">
+      <div class="ch"><h3>Telegram-бот <span class="tag ${iState(t)[0]}">${iState(t)[1]}</span></h3>
+        <button class="b-sm" data-act="ion" data-b="telegram">${t.on ? 'выключить' : 'включить'}</button></div>
+      ${secretField('integ.telegram.token', 'Токен от @BotFather', t.token, 'tg',
+        'Можно вставить всё письмо целиком — токен вытащится сам.')}
+      <div class="g2">
+        ${fInput('integ.telegram.bot', 'Имя бота (@username)', t.bot)}
+        ${fInput('integ.telegram.chat', 'Куда слать (id чата или @канал)', t.chat)}
+      </div>
+      <div class="row"><button class="b-sm" data-act="icheck" data-b="telegram">Проверить токен</button></div>
+      ${test('telegram')}
+    </div>
+
+    <div class="card">
+      <div class="ch"><h3>MAX-бот <span class="tag ${iState(m)[0]}">${iState(m)[1]}</span></h3>
+        <button class="b-sm" data-act="ion" data-b="max">${m.on ? 'выключить' : 'включить'}</button></div>
+      ${secretField('integ.max.token', 'Токен бота MAX', m.token, 'max')}
+      ${fInput('integ.max.bot', 'Имя бота', m.bot)}
+      <p class="hint">Проверки по сети здесь нет: адрес API MAX я не подтверждал, а гадать в кнопке «проверить» —
+        хуже, чем её отсутствие. Токен просто сохраняется для бота.</p>
+    </div>
+
+    <div class="card">
+      <div class="ch"><h3>Прокси для Telegram <span class="tag ${px.url ? (px.on ? '' : 'g') : 'g'}">${
+        px.url ? (px.on ? 'включён' : 'выключен') : 'не задан'}</span></h3>
+        <button class="b-sm" data-act="ion" data-b="proxy">${px.on ? 'выключить' : 'включить'}</button></div>
+      ${fInput('integ.proxy.url', 'Адрес одной строкой', px.url, 'text',
+        'placeholder="socks5://user:pass@1.2.3.4:1080"')}
+      ${!pp ? '<p class="hint">Пусто — бот пойдёт напрямую.</p>'
+        : pp.err ? `<p class="hint" style="color:var(--err);font-weight:600">${esc(pp.err)}</p>`
+        : `<div class="rline"><b>${esc(pp.type)}</b> · ${esc(pp.host)} : ${esc(pp.port)}
+             <div>${pp.user ? 'логин ' + esc(pp.user) + (pp.pass ? ' · пароль задан' : ' · без пароля') : 'без авторизации'}</div></div>`}
+      ${pp && pp.pass ? '<p class="hint">Пароль прокси лежит в файле открыто — как и любой другой ключ здесь.</p>' : ''}
+      <p class="hint">Прокси нужен процессу бота, а не этой странице. Кнопка «Проверить токен» выше ходит
+        напрямую из браузера — если она молчит, а бот работает, значит дело как раз в прокси.</p>
+    </div>`;
 }
 
 function viewGeneral(){
@@ -2234,14 +2400,36 @@ async function loadSigns(quiet){
   }
 }
 
-/* Телефон знает только имя, которое человек вписал сам, — по нему и ищем.
-   Регистр и лишние пробелы не должны рождать второго участника. */
+/* Регистр и лишние пробелы не должны рождать второго участника. */
 const keyName = s => String(s ?? '').trim().toLowerCase().replace(/\s+/g,' ');
-const signTaken = row => !!S.people && S.people.some(p =>
-  keyName(p.name) === keyName(row.name) && p.classes.includes(row.cls));
+/* Телефон в записи (who:'p:…', последние 10 цифр) надёжнее имени: двух
+   «Аня Петрова» различает только он. Записи из бота приходят с who:'i:…' —
+   там телефона нет и остаётся имя. */
+const signPhone = row => /^p:(\d{10})$/.exec(String(row.who || ''))?.[1] || '';
+const pKey = v => { const d = digits(v); return d.length >= 10 ? d.slice(-10) : ''; };
+
+/* Один поиск и для галочки «уже внесено», и для кнопки «Внести»: разойдись
+   они — на первом однофамильце кнопка врала бы про то, что делает. */
+function signPerson(row){
+  const ph = signPhone(row);
+  if(ph){ const i = S.people.findIndex(p => pKey(p.phone) === ph); if(i >= 0) return i; }
+  return S.people.findIndex(p => keyName(p.name) === keyName(row.name));
+}
+const signTaken = row => { if(!S.people) return false;
+  const i = signPerson(row); return i >= 0 && S.people[i].classes.includes(row.cls); };
+
+/* Занято мест в группе — так же, как считает сервер (см. server.mjs, takenOf):
+   участники и записи с телефонов объединяются по имени, чтобы один человек
+   не занял два места, пока его запись не внесли. */
+function takenIn(key){
+  const who = new Set();
+  (S.people || []).forEach(p => { if(p.classes.includes(key)) who.add(keyName(p.name)); });
+  (S.signs  || []).forEach(r => { if(r.cls === key)           who.add(keyName(r.name)); });
+  return who.size;
+}
 
 function takeSign(row){
-  let i = S.people.findIndex(p => keyName(p.name) === keyName(row.name));
+  let i = signPerson(row);
   if(i < 0){
     S.people.push({ ...TPL.people(), name:String(row.name).trim(), room:String(row.room ?? '').trim() });
     i = S.people.length - 1;
@@ -2300,8 +2488,8 @@ function viewSigns(){
         : '<button data-act="openp">Открыть участников</button>'}
     </div>
     ${body}
-    <p class="hint" style="margin-top:8px">«Внести» добавляет мастер-класс участнику с таким же именем,
-      а незнакомого создаёт заявкой. Отмена записи на телефоне убирает строку отсюда, но у участника
+    <p class="hint" style="margin-top:8px">«Внести» добавляет мастер-класс участнику, которого нашли
+      по телефону из записи (а запись из бота — по имени); незнакомого создаёт заявкой. Отмена записи на телефоне убирает строку отсюда, но у участника
       мастер-класс остаётся — снимите его в карточке участника.</p>`;
 }
 
@@ -2497,7 +2685,7 @@ function viewAccess(){
 
 const VIEW = { dash:viewDash, ann:viewAnn, sched:viewSched, classes:viewClasses,
                info:viewInfo, texts:viewTexts, general:viewGeneral, people:viewPeople,
-               rosters:viewRosters, access:viewAccess, signs:viewSigns };
+               rosters:viewRosters, access:viewAccess, signs:viewSigns, integr:viewIntegr };
 
 const A = {
   /* Стойка регистрации — отдельная страница: там нужен только поиск,
@@ -2519,6 +2707,35 @@ const A = {
     toast(`Внесено записей: ${fresh.length}`); },
   openf: () => openFolder(),
   files: () => { S.view = 'general'; render(); },
+  ishow: b => { S.iShow[b.dataset.k] = !S.iShow[b.dataset.k]; render(); },
+  icopy: async b => {
+    const v = b.dataset.k === 'tg' ? S.integ.telegram.token : S.integ.max.token;
+    try{ await navigator.clipboard.writeText(v); toast('Скопировано'); }
+    catch(_){ toast('Браузер не дал доступ к буферу', 'err'); }
+  },
+  ion: b => { const k = b.dataset.b, blk = S.integ[k];
+    mark(true); blk.on = !blk.on; touched('integ'); render(); },
+  icheck: async b => {
+    const k = b.dataset.b, t = S.integ[k].token;
+    if(!t) return toast('Сначала вставьте токен', 'err');
+    S.iTest[k] = { ok:false, msg:'Проверяю…' }; render();
+    try{
+      const r = await fetch(`https://api.telegram.org/bot${encodeURIComponent(t)}/getMe`);
+      const j = await r.json();
+      if(j.ok && j.result){
+        S.integ[k].bot = j.result.username || S.integ[k].bot;
+        S.iDirty = true;
+        S.iTest[k] = { ok:true, msg:`Токен рабочий: @${j.result.username} (${j.result.first_name})` };
+      } else {
+        S.iTest[k] = { ok:false, msg:`Телеграм ответил: ${j.description || 'токен не принят'}` };
+      }
+    }catch(err){
+      // сеть до api.telegram.org не дошла — это ровно тот случай, ради которого и прокси
+      S.iTest[k] = { ok:false, msg:'Не достучались до api.telegram.org — похоже, доступ закрыт. ' +
+        'Токен при этом может быть верным: бот пойдёт через прокси.' };
+    }
+    render();
+  },
   save:  () => saveAll(),
   undo:  () => undo(),
   redo:  () => redo(),
@@ -2756,6 +2973,11 @@ document.addEventListener('input', e => {
   const p = t.dataset.path;
   if(!p) return;
   mark();
+  // вставили письмо BotFather целиком — берём из него только токен
+  if(/^integ\.(telegram|max)\.token$/.test(p) && /\s/.test(t.value)){
+    const only = grabToken(t.value);
+    if(only && only !== t.value){ t.value = only; }
+  }
   const v = t.type === 'checkbox' ? t.checked
           : t.type === 'number'   ? Number(t.value)
           : t.type === 'datetime-local' ? t.value.replace('T',' ').slice(0,16)
@@ -2991,7 +3213,40 @@ if(location.hash === '#selftest'){ (async () => {
   ok('вторая запись того же человека идёт ему же, комнату не перебивает',
      S.people.length === nPeople + 1 && S.people[0].classes.join() === 'Музыка,Рукоделие'
      && S.people[0].room === '12');
+  /* телефон различает однофамильцев; имя остаётся для записей из бота */
+  ok('запись с телефона идёт своему участнику, даже если имя написано иначе',
+     signPerson({ who:'p:9001112233', name:'Анна Петровна', cls:'Музыка' }) === 0
+     && signTaken({ who:'p:9001112233', name:'Анна Петровна', cls:'Музыка' }));
+  ok('незнакомый телефон не мешает найти по имени',
+     signTaken({ who:'p:9999999999', name:'аня', cls:'Музыка' }));
+  ok('занято мест: участник и его запись — это один человек',
+     takenIn('Музыка') === 2 && takenIn('Чего нет') === 0);
   S.people.pop(); S.signs = null;
+
+  /* ── интеграции: токены, прокси, маскировка ── */
+  S.integ = INTEG_DEF();
+  ok('токен вытаскивается из письма BotFather',
+     grabToken('Done! Congratulations на вашего бота.\n\n123456789:AAF-ZxCv_qwertyuiopASDFGHJKLzxcvbn12\n\nKeep it safe.')
+     === '123456789:AAF-ZxCv_qwertyuiopASDFGHJKLzxcvbn12');
+  ok('чистый токен не портится', grabToken(' 987654321:BBB-abcdefghijklmnopqrstuvwxyz012345 ')
+     === '987654321:BBB-abcdefghijklmnopqrstuvwxyz012345');
+  ok('маска прячет середину', (() => { const m = mask('123456789:AAF-ZxCv_qwertyuiopASDFGHJKL');
+     return m.startsWith('1234') && m.endsWith('HJKL') && !m.includes('ZxCv'); })());
+  ok('прокси разбирается', (() => { const p = parseProxy('socks5://vasya:secret@10.0.0.5:1080');
+     return p.type === 'socks5' && p.host === '10.0.0.5' && p.port === '1080' && p.user === 'vasya' && p.pass === true; })());
+  ok('порт подставляется по умолчанию', parseProxy('socks5://1.2.3.4').port === '1080');
+  ok('адрес без схемы считается socks5', parseProxy('1.2.3.4:9050').type === 'socks5');
+  ok('чужая схема отбивается', !!parseProxy('ftp://1.2.3.4').err);
+  ok('мусор отбивается', !!parseProxy('это не адрес вообще').err);
+  ok('пусто — это не ошибка', parseProxy('') === null);
+  setInteg('{"telegram":{"token":"t"}}', 'integrations.json');
+  ok('старый файл дополняется до полной формы',
+     S.integ.telegram.token === 't' && S.integ.max.token === '' && S.integ.proxy.url === '');
+  setInteg('не json', 'integrations.json');
+  ok('битый файл не роняет панель', !!S.integ && S.integ.telegram.on === false);
+  S.integ = INTEG_DEF(); S.integ.telegram.token = 'СЕКРЕТ:123';
+  ok('токены не утекают в лендинг', !injectCamp(S.html, S.camp).includes('СЕКРЕТ'));
+  S.integ = null; S.iDirty = false;
 
   /* ── плитки: мастер-классы и памятка ── */
   S.camp.classes = [

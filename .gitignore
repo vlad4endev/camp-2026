@@ -7,5 +7,6 @@ participants.json
 signups.json
 backups/
 
-# Токены ботов передаются через переменные окружения
+# Токены ботов: файл панели и переменные окружения
+integrations.json
 .env

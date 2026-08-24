@@ -35,6 +35,15 @@ import path from 'node:path';
 import os   from 'node:os';
 import { createHash } from 'node:crypto';
 
+/* import.meta.dirname появился в Node 20.11. На Debian 12 и Ubuntu 24.04
+   `apt install nodejs` ставит 18.x — там ROOT молча станет undefined, и
+   сервер упадёт внутри path.resolve с невнятным TypeError. Говорим прямо. */
+if (!import.meta.dirname) {
+  console.error(`Нужен Node 20.11 или новее — установлен ${process.version}.`);
+  console.error('Как поставить свежий: deploy/README.md, раздел «Первая установка».');
+  process.exit(1);
+}
+
 const ROOT = import.meta.dirname;
 const PORT = Number(process.argv.find(a => /^\d+$/.test(a))) || 8000;
 
@@ -437,6 +446,7 @@ function selftest(){
      'backups/users-1.json','landing.html.bak','sw.js.map'].every(x => !P(x)),
                                                         'посторонний файл в сеть не уходит');
   a(!P('users.json'),                                   'хэши паролей в лагерную Wi-Fi не уходят');
+  a(!P('integrations.json'),                            'токены ботов в лагерную Wi-Fi не уходят');
   a(!P('участники.json'),                              'новый файл закрыт по умолчанию');
   /* стык двух проверок: белый список смотрит на РАЗРЕШЁННЫЙ путь, поэтому
      ../ из разрешённой папки не открывает доступ к соседнему файлу */
