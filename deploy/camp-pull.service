@@ -1,0 +1,15 @@
+# /etc/systemd/system/camp-pull.service — один прогон выкладки.
+# Запускается таймером camp-pull.timer, сам ничего не ждёт.
+[Unit]
+Description=Офлайн Кемп — подтянуть main из GitHub и выложить
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# root нужен: скрипт кладёт файлы от имени camp и перезапускает сервис
+User=root
+ExecStart=/srv/camp-src/deploy/pull.sh
+# Выкладка сломанного кода отменяется самим скриптом (selftest), поэтому
+# ненулевой код выхода — это «не выложили», а не «сервер упал».
+SuccessExitStatus=0

@@ -18,6 +18,33 @@
 открыта**. На сервере это ничего не значит. Её вход (PBKDF2, 120 000
 итераций) — второй слой поверх границы, а не замена ей.
 
+## Как устроена выкладка
+
+```
+ноутбук ──git push──> GitHub ──git pull (каждые 2 мин)──> сервер
+   │                                                         ▲
+   └──────────── participants.json (rsync, напрямую) ─────────┘
+```
+
+Код едет через GitHub. Участники — напрямую: в публичном репозитории им
+не место, там телефоны и комнаты. Записи с телефонов забираются обратно
+тем же rsync.
+
+Сервер тянет сам, а не GitHub заходит по SSH. Репозиторий публичный,
+поэтому `git pull` не требует никаких секретов — а схема с Actions
+потребовала бы держать SSH-ключ к серверу в GitHub Secrets, то есть взлом
+аккаунта GitHub означал бы root здесь.
+
+Рабочая копия и раздаваемая папка разделены намеренно:
+
+| | | |
+|---|---|---|
+| `/srv/camp-src` | клон репозитория | тут лежит и `admin.html`, но он никуда не раздаётся |
+| `/srv/camp` | что раздаёт сервер | только лендинг, воркер, манифест, иконки, `server.mjs` |
+
+Админки, `users.json` и `integrations.json` с токенами ботов в `/srv/camp`
+нет вообще. «Файла нет» — граница надёжнее любого белого списка.
+
 ## Первая установка
 
 Нужен **Node 20.11 или новее**: `server.mjs` использует
@@ -28,26 +55,31 @@
 ```bash
 # на сервере, под root
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt install -y nodejs nginx certbot python3-certbot-nginx rsync
+apt install -y nodejs nginx certbot python3-certbot-nginx git rsync
 node -v                                   # должно быть v22.x, не v18
 adduser --system --home /srv/camp --shell /bin/bash camp
 mkdir -p /srv/camp && chown camp:camp /srv/camp
+git clone https://github.com/vlad4endev/camp-2026 /srv/camp-src
 ```
 
-Выложить файлы с ноутбука (вместе с ними уедет и папка `deploy/`):
+Сервис и таймер выкладки:
 
 ```bash
-./deploy/publish.sh
+cp /srv/camp-src/deploy/camp.service      /etc/systemd/system/
+cp /srv/camp-src/deploy/camp-pull.service /etc/systemd/system/
+cp /srv/camp-src/deploy/camp-pull.timer   /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable camp
+/srv/camp-src/deploy/pull.sh              # первая выкладка, поднимет camp
+systemctl enable --now camp-pull.timer
 ```
 
-Сервис и прокси:
+`pull.sh` сам поймёт, что запущен впервые: в `/srv/camp` ещё нет лендинга.
+Дальше он выкладывает только при новом коммите в `main`.
+
+Прокси и сертификат:
 
 ```bash
-# на сервере
-cp /srv/camp/deploy/camp.service /etc/systemd/system/camp.service
-systemctl enable --now camp
-systemctl status camp            # должно быть «ПУБЛИЧНЫЙ РЕЖИМ»
-
 cp /srv/camp/deploy/nginx.conf /etc/nginx/sites-available/camp.offline-tambov.ru
 ln -s /etc/nginx/sites-available/camp.offline-tambov.ru /etc/nginx/sites-enabled/
 certbot --nginx -d camp.offline-tambov.ru      # выпишет сертификат и допишет ssl_*
@@ -55,6 +87,12 @@ nginx -t && systemctl reload nginx
 ```
 
 DNS: `A`-запись `camp` → IP сервера, до запуска certbot.
+
+Участники (с ноутбука, после того как сервер поднялся):
+
+```bash
+./deploy/publish.sh data
+```
 
 ## Проверка, что граница держит
 
@@ -76,8 +114,25 @@ curl -so /dev/null -w '%{http_code}\n' https://camp.offline-tambov.ru/signups.js
 ## Повседневная работа
 
 ```bash
-./deploy/publish.sh        # выложить правки лендинга, забрать записи
+./deploy/publish.sh        # запушить лендинг, обновить участников, забрать записи
+./deploy/publish.sh code   # только код: коммит landing.html и push
+./deploy/publish.sh data   # только участники и записи
 ./deploy/publish.sh pull   # только забрать записи
+```
+
+Правки лендинга доезжают до сервера в течение двух минут — таймер сам
+подтянет коммит. Заходить на сервер для выкладки больше не нужно.
+
+Что происходит на сервере — видно в журнале:
+
+```bash
+ssh root@camp.offline-tambov.ru 'journalctl -u camp-pull -n 30 --no-pager'
+```
+
+Выложить принудительно, не дожидаясь таймера:
+
+```bash
+ssh root@camp.offline-tambov.ru '/srv/camp-src/deploy/pull.sh --force'
 ```
 
 Кэш на телефонах обновляется сам: версия в `sw.js` считается из хэша
@@ -96,9 +151,16 @@ TG_TOKEN=… MAX_TOKEN=… CAMP_PORT=8000 node bots.mjs
 
 ## Чего здесь нет
 
-- **Синхронизации в обе стороны.** `publish.sh` выкладывает лендинг и
-  участников, забирает записи. Если править участников и на сервере, и на
-  ноутбуке — выкладка перезапишет серверную копию. Правьте только в админке.
+- **Синхронизации участников в обе стороны.** `publish.sh data`
+  перезаписывает серверную копию. Правьте участников только в админке.
+- **Откатов через GitHub.** Сервер всегда выкладывает `origin/main`.
+  Чтобы откатиться, нужен `git revert` и push — сервер подтянет откат
+  как обычный коммит. Ручного «вернуть предыдущую версию» на сервере нет:
+  сломанный код туда не попадёт, его отсекает selftest в `pull.sh`.
+- **Приватного репозитория.** `git clone` идёт без секретов именно потому,
+  что репозиторий публичный. Сделаете приватным — понадобится deploy key
+  на сервере (`ssh-keygen`, публичная часть в Settings → Deploy keys) и
+  адрес `git@github.com:vlad4endev/camp-2026.git`.
 - **Бэкапов сервера.** `backups/` на сервере наполняется снимками
   участников, но никуда не уезжает. Настройте `restic`/`borg`, если записи
   на мастер-классы важны как единственная копия.

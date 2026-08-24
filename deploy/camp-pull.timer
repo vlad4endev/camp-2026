@@ -1,0 +1,22 @@
+# /etc/systemd/system/camp-pull.timer — проверять GitHub каждые 2 минуты.
+#
+#   sudo systemctl enable --now camp-pull.timer
+#   systemctl list-timers camp-pull.timer
+#   journalctl -u camp-pull -f          # что выложилось и когда
+#
+# Две минуты — компромисс: правка объявления доезжает до телефонов почти
+# сразу, а GitHub видит один запрос в две минуты и не считает нас ботом.
+# Нужно быстрее — уменьшите OnUnitActiveSec, git fetch без изменений
+# стоит один HTTP-запрос и ничего не выкладывает.
+[Unit]
+Description=Офлайн Кемп — проверять GitHub каждые 2 минуты
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+# Разброс: чтобы после перезагрузки все таймеры не стартовали разом
+RandomizedDelaySec=15
+Unit=camp-pull.service
+
+[Install]
+WantedBy=timers.target
