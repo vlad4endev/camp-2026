@@ -57,8 +57,11 @@
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs nginx certbot python3-certbot-nginx git rsync
 node -v                                   # должно быть v22.x, не v18
-adduser --system --home /srv/camp --shell /bin/bash camp
-mkdir -p /srv/camp && chown camp:camp /srv/camp
+# --group обязателен: без него adduser --system кладёт camp в nogroup,
+# группы camp не появляется, и chown camp:camp падает — а следом за ним
+# каждая выкладка, потому что pull.sh делает install -o camp -g camp
+adduser --system --group --home /srv/camp --shell /bin/bash camp
+mkdir -p /srv/camp && chown -R camp:camp /srv/camp
 git clone https://github.com/vlad4endev/camp-2026 /srv/camp-src
 ```
 
