@@ -378,9 +378,50 @@ const idb = {
       q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); }catch(_){ return null; } },
 };
 
+/* ── ПАНЕЛЬ С СЕРВЕРА ───────────────────────────────────────────
+   Ресепшен открыт по адресу домена (/reseption/): папки рядом нет, а на
+   телефоне нет и File System Access API — а ресепшен без записи бесполезен,
+   он существует ради отметки заезда и оплат.
+
+   Отдаём тот же интерфейс handle, что даёт браузер: getFile() и
+   createWritable(). Тогда push(), pull() и защита от гонок работают без
+   правок. Читаем GET, пишем PUT на порт панели.
+
+   Двадцать строк дублируются с admin.html намеренно: обе панели —
+   самостоятельные файлы без сборки, и общий .js стоил бы лишнего запроса
+   там, где важнее, чтобы страница открывалась одна и целиком. */
+const ONSRV = !['localhost', '127.0.0.1', '[::1]', ''].includes(location.hostname);
+
+function srvFile(name){
+  return { kind:'file', name,
+    async getFile(){
+      const r = await fetch(name + '?t=' + Date.now(), { cache:'no-store' });
+      if(!r.ok) throw new Error(name + ': HTTP ' + r.status);
+      const text = await r.text();
+      return { name, lastModified: Number(r.headers.get('X-Mtime')) || 0,
+               text: async () => text };
+    },
+    async createWritable(){
+      let buf = '';
+      return {
+        write: async t => { buf += t; },
+        close: async () => {
+          const r = await fetch(name, { method:'PUT', body: buf });
+          if(r.ok) return;
+          let why = '';
+          try{ why = (await r.json()).error || ''; }catch(_){}
+          // Громко: иначе ресепшен считал бы оплату записанной, а её нет
+          throw new Error('сервер не принял ' + name + ': ' + (why || 'HTTP ' + r.status));
+        } };
+    } };
+}
+
 /* Право на запись просим только по нажатию — браузер иначе откажет.
    Без права страница работает как справочник: искать можно, менять нет. */
 async function attach(gesture){
+  /* На сервере разрешение спрашивать не у кого: пишем прямо туда, и право
+     на запись даёт Basic auth в nginx, а не диалог браузера. */
+  if(ONSRV){ P.h = srvFile('participants.json'); P.rw = true; return true; }
   const ok = async h => {
     if(!h || !h.queryPermission) return !!h;
     let perm = await h.queryPermission({ mode:'readwrite' });
@@ -400,6 +441,9 @@ async function attach(gesture){
 }
 
 async function openFile(){                       // ручной путь: файл выбирают глазами
+  /* На домене выбирать файл нельзя: запись ушла бы в файл этого устройства,
+     а лагерь продолжал бы видеть старое — и молча. */
+  if(ONSRV) return toast('Ресепшен открыт с сервера — он пишет прямо туда', 'err');
   if(!window.showOpenFilePicker) return toast('Браузер не умеет писать в файл — откройте панель в Chrome', 'err');
   let h;
   try{ [h] = await showOpenFilePicker({ types:[{ description:'JSON', accept:{'application/json':['.json']} }] }); }

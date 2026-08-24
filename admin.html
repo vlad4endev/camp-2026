@@ -621,9 +621,88 @@ async function pick(open, opts){
 const HTML_T = { types:[{ description:'HTML', accept:{'text/html':['.html']} }] };
 const JSON_T = { types:[{ description:'JSON', accept:{'application/json':['.json']} }] };
 
+/* ── ПАНЕЛЬ С СЕРВЕРА ───────────────────────────────────────────
+
+   Панель открыта по адресу домена (/admin/), а не с ноутбука. Файлы лежат
+   на сервере, папки рядом нет, а на телефоне нет и File System Access API.
+
+   Приём: отдаём наружу ровно тот же интерфейс handle, что даёт браузер, —
+   getFile() и createWritable(). Тогда все существующие пути сохранения,
+   проверка конфликтов и автосохранение работают без единой правки. Читаем
+   GET, пишем PUT; порт панели в server.mjs разрешает только эти четыре
+   имени файлов.
+
+   Определяем по имени хоста: на ноутбуке панель всегда на localhost, из
+   лагерной Wi-Fi её вообще не отдают. */
+const ONSRV = !['localhost', '127.0.0.1', '[::1]', ''].includes(location.hostname);
+
+function srvFile(name){
+  return { kind:'file', name,
+    async getFile(){
+      const r = await fetch(name + '?t=' + Date.now(), { cache:'no-store' });
+      if(!r.ok) throw new Error(name + ': HTTP ' + r.status);
+      const text = await r.text();
+      // X-Mtime ставит server.mjs: по нему conflict() ловит чужую правку
+      return { name, lastModified: Number(r.headers.get('X-Mtime')) || 0,
+               text: async () => text };
+    },
+    async createWritable(){
+      let buf = '';
+      return {
+        write: async t => { buf += t; },
+        close: async () => {
+          const r = await fetch(name, { method:'PUT', body: buf });
+          if(r.ok) return;
+          let why = '';
+          try{ why = (await r.json()).error || ''; }catch(_){}
+          // Молчать нельзя: панель считала бы правку сохранённой, а лагерь
+          // видел бы старое. Пусть падает громко — вызывающий покажет toast.
+          throw new Error('сервер не принял ' + name + ': ' + (why || 'HTTP ' + r.status));
+        } };
+    } };
+}
+
+/* Читаем файл с сервера и ставим handle. Файла может ещё не быть
+   (users.json, integrations.json) — тогда handle всё равно ставим, файл
+   создастся при первом сохранении. */
+async function srvOpen(name, apply){
+  const h = srvFile(name);
+  try{
+    const fl = await h.getFile();
+    apply(await fl.text(), fl.lastModified);
+  }catch(err){ apply(null, 0); }
+  return h;
+}
+
+async function useServer(){
+  S.hCamp = await srvOpen('landing.html', (text, mt) => {
+    if(text === null) return toast('Лендинг с сервера не прочитан', 'err');
+    S.mtC = mt; S.backed = {};
+    loadLanding(text, 'landing.html');
+  });
+  S.hPeople = await srvOpen('participants.json', (text, mt) => {
+    S.mtP = mt;
+    loadPeople((text || '').trim() || '[]', 'participants.json');
+  });
+  S.hUsers = await srvOpen('users.json', (text, mt) => {
+    S.mtU = mt;
+    if(text && text.trim()) setUsers(text, 'users.json');
+  });
+  S.hInteg = await srvOpen('integrations.json', (text, mt) => {
+    S.mtI = mt;
+    if(text && text.trim()) setInteg(text, 'integrations.json');
+  });
+  await loadSigns(true);
+}
+
 /* Папка целиком — единственный способ класть бэкапы рядом с файлами:
    файловый хэндл прав на соседние файлы не даёт. */
 async function openFolder(){
+  /* На домене папку открывать нельзя: handle подменились бы на локальные,
+     сохранение ушло бы в папку этого устройства, а лагерь продолжал бы
+     видеть старое — и молча. */
+  if(ONSRV)
+    return toast('Панель открыта с сервера — она пишет прямо туда, папка не нужна', 'err');
   if(!window.showDirectoryPicker)
     return toast('Браузер не умеет открывать папки — откройте файлы по отдельности', 'err');
   let dir;
@@ -1257,6 +1336,7 @@ async function signOut(why){
 
 async function gateBoot(){
   await Promise.all([loadUsers(), loadInteg(), gatePlace()]);
+  if(ONSRV) await useServer();       // файлы с сервера, папку не спрашиваем
   let who = null;
   try{ who = sessionStorage.getItem(WHO); }catch(_){}
   const u = who && findUser(who);
@@ -2388,6 +2468,18 @@ function rosterHtml(){
    по кнопке «Внести», и уже как обычные мастер-классы участника:
    печать, фильтры и списки работают дальше сами. */
 async function loadSigns(quiet){
+  /* На сервере папки нет, а записи с телефонов — главное, зачем панель
+     открывают с телефона. Читаем их по HTTP: порт панели signups.json
+     отдаёт, публичный порт — нет. */
+  if(!S.hDir && ONSRV){
+    try{
+      const r = await fetch('signups.json?t=' + Date.now(), { cache:'no-store' });
+      const arr = r.ok ? JSON.parse(await r.text()) : [];
+      S.signs = Array.isArray(arr)
+        ? arr.filter(x => x && typeof x.cls === 'string' && typeof x.name === 'string') : [];
+    }catch(err){ S.signs = S.signs || []; }
+    return;
+  }
   if(!S.hDir) return;
   try{
     const h = await S.hDir.getFileHandle('signups.json');
