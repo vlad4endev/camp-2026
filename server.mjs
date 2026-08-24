@@ -38,6 +38,9 @@ import fs   from 'node:fs';
 import path from 'node:path';
 import os   from 'node:os';
 import { createHash } from 'node:crypto';
+/* Единая база. Без SUPABASE_URL модуль выключен и всё работает на файлах,
+   как раньше: переезд включается по одной машине. Подробности в db.mjs. */
+import * as db from './db.mjs';
 
 /* import.meta.dirname появился в Node 20.11. На Debian 12 и Ubuntu 24.04
    `apt install nodejs` ставит 18.x — там ROOT молча станет undefined, и
@@ -277,6 +280,14 @@ function writeSignups(list){
    Разбираем тем же приёмом, что и админка, и держим до правки файла. */
 let campCache = { mt:0, v:'', camp:null };
 export function campData(){
+  /* С единой базой содержимое лагеря приходит из camp.json — зеркала,
+     которое db.mjs обновляет из Supabase. Версию считает база, поэтому
+     свою здесь не пересчитываем. Зеркала ещё нет (первый запуск, пустая
+     база) — разбираем лендинг, как раньше: пусто лучше не отдавать. */
+  if (db.configured()){
+    const m = db.camp();
+    if (m && m.camp) return m;
+  }
   const f = path.join(ROOT, 'landing.html');
   try {
     const mt = fs.statSync(f).mtimeMs;
@@ -354,6 +365,32 @@ function signup(req, res, send){
     if (!rec.off && !mine && isFull(seat))
       return send(409, JSON.stringify({ ok:false, error:'full', ...seat }), JSONT);
 
+    /* ── путь через единую базу ──
+       Лимит здесь больше не решающий: его проверяет claim_seat внутри
+       транзакции, поэтому на 12 мест не может прийти 13 человек, даже
+       если два телефона нажали одновременно. Проверка выше остаётся как
+       быстрый отказ без похода в сеть. */
+    if (db.configured()){
+      const who = whoKey(rec);
+      if (!who || !cls) return send(400, JSON.stringify({ ok:false, error:'bad' }), JSONT);
+      return db.signup({ who, name: clean(rec.name, LIM.name),
+                         room: clean(rec.room, LIM.room), cls, off: !!rec.off })
+        .then(r => {
+          if (r && r.error === 'full')
+            return send(409, JSON.stringify(r), JSONT);
+          if (!r || !r.ok)
+            return send(400, JSON.stringify(r || { ok:false, error:'bad' }), JSONT);
+          /* зеркало db.signup уже обновил — перечитываем и отвечаем тем
+             же, чем отвечали всегда: телефон не знает про переезд */
+          const fresh = readSignups(), ppl = readPeople();
+          send(200, JSON.stringify(person
+            ? { ...meAnswer(ppl.find(p => p.id === person.id) || person, fresh, ppl),
+                queued: !!r.queued }
+            : { ok:true, count: fresh.length, queued: !!r.queued }), JSONT);
+        })
+        .catch(err => send(500, JSON.stringify({ ok:false, error:err.message }), JSONT));
+    }
+
     const next = applySignup(list, rec, new Date().toISOString().slice(0,16).replace('T',' '));
     if (!next) return send(400, JSON.stringify({ ok:false, error:'bad' }), JSONT);
     try { writeSignups(next); }
@@ -398,16 +435,37 @@ function camp(send, was){
    такого номера» всем участникам сразу. */
 const WRITABLE = new Set(['landing.html', 'participants.json',
                           'users.json', 'integrations.json']);
-export const canWrite = name => WRITABLE.has(name);
+
+/* СТОЙКА — отдельный пропуск с отдельным паролем. Раздельные пароли сами
+   по себе были бы косметикой: с паролем стойки можно было бы открыть
+   /reseption/admin.html и получить весь штаб, потому что порт панели
+   отдаёт всё. Поэтому у стойки свой порт и свой короткий список.
+
+   Ресепшен правит только участников — значит остального для него не
+   существует: ни admin.html, ни лендинга, ни integrations.json с токенами
+   ботов. Пароль у стойки — это пароль человека, который принимает деньги,
+   а не человека, который правит расписание.
+
+   users.json стойке нужен: вход в ресепшен идёт по нему же. Отфильтровать
+   его не выйдет — роль admin входит и на стойке, так что её хэш там нужен
+   по делу. Разделение здесь не про сокрытие хэшей, а про то, что стойка
+   physically не может ни открыть штаб, ни перезаписать лендинг. */
+const DESK_READ  = new Set(['reception.html', 'camp-db.js',
+                            'participants.json', 'users.json']);
+const DESK_WRITE = new Set(['participants.json']);
+
+export const canWrite = (name, role = 'panel') =>
+  (role === 'desk' ? DESK_WRITE : WRITABLE).has(name);
+export const canRead  = (role, rel) => role !== 'desk' || DESK_READ.has(rel);
 const MAX_PUT  = 4 * 1024 * 1024;              // лендинг ~310 КБ, запас большой
 
-function put(req, res, send){
+function put(req, res, send, role = 'panel'){
   /* Имя берём из маршрута целиком, а не basename: тот срезал бы путь и
      принял PUT /../landing.html как landing.html. Наружу папки это всё
      равно не выводит (join с ROOT), но поведение должно совпадать с
      canWrite() из проверок, а не «случайно быть безопасным». */
   const name = req.url.split('?')[0].replace(/^\//, '');
-  if (!WRITABLE.has(name))
+  if (!canWrite(name, role))
     return send(403, JSON.stringify({ ok:false, error:'not_writable', name }), JSONT);
 
   let text = '', over = false;
@@ -439,15 +497,64 @@ function put(req, res, send){
   });
 }
 
+/* ── 3.8 Запись из панели в базу (POST /queue) ─────────────────
+
+   Штаб и стойка ходят в Supabase напрямую — оттуда они работают с любого
+   устройства. Но в лагере интернета нет, а заезд и деньги ждать не могут.
+   Тогда панель стучится сюда, на локальный сервер: он либо дотянется до
+   базы сам, либо положит операцию в очередь и дошлёт её, когда связь
+   вернётся. Ответ в обоих случаях «принято» — queued:true говорит, что
+   это ещё не в базе.
+
+   Почему не PUT participants.json, который уже есть: этот файл теперь
+   зеркало базы, и следующий же pull() затёр бы правку. Через очередь
+   правка доезжает до источника правды.
+
+   ТОЛЬКО порт панели: у публичного порта этого маршрута нет вовсе. */
+function queue(req, res, send){
+  if (!db.configured())
+    return send(503, JSON.stringify({ ok:false, error:'no_db' }), JSONT);
+
+  body(req, res, send, rec => {
+    const op = rec && rec.op;
+    const id = clean(rec && rec.id, LIM.id);
+    let task;
+
+    if (op === 'person'){
+      if (!id || !rec.fields || typeof rec.fields !== 'object')
+        return send(400, JSON.stringify({ ok:false, error:'bad' }), JSONT);
+      task = db.savePerson(id, rec.fields);
+    } else if (op === 'payment'){
+      const sum = Number(rec.sum);
+      if (!id || !Number.isFinite(sum) || sum === 0)
+        return send(400, JSON.stringify({ ok:false, error:'bad' }), JSONT);
+      task = db.addPayment(id, { id: rec.pay_id, at: clean(rec.at, 20),
+                                 sum, note: clean(rec.note, 200) });
+    } else if (op === 'payment_del'){
+      if (!id || !rec.pay_id)
+        return send(400, JSON.stringify({ ok:false, error:'bad' }), JSONT);
+      task = db.delPayment(id, String(rec.pay_id));
+    } else {
+      return send(400, JSON.stringify({ ok:false, error:'unknown_op' }), JSONT);
+    }
+
+    task.then(r => send(200, JSON.stringify(r), JSONT))
+        .catch(err => send(500, JSON.stringify({ ok:false, error:err.message }), JSONT));
+  });
+}
+
 /* ── 4. Сервер ────────────────────────────────────────────────── */
 
-/* panel=true — запрос пришёл на порт панели. Этот порт слушает только
-   loopback, а снаружи на него ведёт единственный путь: location /admin/
-   в nginx, закрытый Basic auth. Поэтому «пришло сюда» = «гейт пройден».
-   Заголовкам при этом не верим нигде: порт подделать нельзя, заголовок —
-   можно. */
-function serve(req, res, panel = false){
-  const local = panel || trusted(req.socket.remoteAddress);
+/* role: 'public' — порт из интернета, 'panel' — штаб, 'desk' — стойка.
+   Каждая роль это свой порт, и все непубличные слушают только loopback.
+   Снаружи на них ведёт единственная дорога — location /admin/ и
+   /reseption/ в nginx, каждая под своим паролем. Поэтому «пришло на этот
+   порт» = «этот гейт пройден».
+
+   Роль определяется портом, а не заголовком, намеренно: порт из интернета
+   подделать нельзя, заголовок — можно, а цена ошибки здесь вся админка. */
+function serve(req, res, role = 'public'){
+  const local = role !== 'public' || trusted(req.socket.remoteAddress);
   const send = (code, body, type='text/plain; charset=utf-8') =>
     res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-cache' }).end(body);
 
@@ -457,12 +564,23 @@ function serve(req, res, panel = false){
       return send(429, JSON.stringify({ ok:false, error:'too_often' }), JSONT);
     return route === '/signup' ? signup(req, res, send) : me(req, res, send);
   }
+  /* Очередь и её состояние — только с порта панели: участникам тут делать
+     нечего, а в публичном порту этих маршрутов просто нет. */
+  if (route === '/queue'){
+    if (!local) return send(404, 'Не найдено');
+    if (req.method !== 'POST') return send(405, 'Только POST');
+    return queue(req, res, send);
+  }
+  if (req.method === 'GET' && route === '/dbstatus'){
+    if (!local) return send(404, 'Не найдено');
+    return send(200, JSON.stringify(db.status()), JSONT);
+  }
   if (req.method === 'GET'  && route === '/seats')  return seats(send);
   if (req.method === 'GET'  && route === '/camp')
     return camp(send, new URL(req.url, 'http://x').searchParams.get('v'));
   if (req.method === 'PUT'){
     if (!local) return send(405, 'Только GET');   // публичный порт не пишет никогда
-    return put(req, res, send);
+    return put(req, res, send, role);
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, 'Только GET');
 
@@ -473,6 +591,8 @@ function serve(req, res, panel = false){
   const rel  = path.relative(ROOT, abs);
   if (!local && !isPublic(rel))
     return send(404, 'Не найдено');            // 404, а не 403: не подсказываем, что файл есть
+  if (!canRead(role, rel))
+    return send(404, 'Не найдено');            // стойке штаб не виден вообще
 
   let stat;
   try { stat = fs.statSync(abs); } catch { return send(404, 'Не найдено') }
@@ -562,6 +682,11 @@ function selftest(){
      ../ из разрешённой папки не открывает доступ к соседнему файлу */
   a(!P('signups.json') && !P('signups.json.tmp'),      'записи на МК наружу не отдаются');
   a(!P('integrations.json'),                            'токены ботов наружу не отдаются');
+  /* Зеркало базы и очередь неотправленного — такие же приватные файлы,
+     как participants.json: в них лежат имена, комнаты и деньги. */
+  a(!P('camp.json') && !P('outbox.json') && !P('outbox.json.tmp'),
+                                                        'зеркало базы и очередь наружу не отдаются');
+  a(!canWrite('camp.json') && !canWrite('outbox.json'),  'зеркало базы панель через PUT не правит');
 
   /* Что панель имеет право перезаписать. Код и воркер — только через git:
      PUT туда означал бы удалённое исполнение кода на сервере. */
@@ -572,6 +697,21 @@ function selftest(){
      'landing.html.tmp','participants.json.tmp'].every(n => !canWrite(n)),
                                                         'ничего другого панель перезаписать не может');
   a(!canWrite('') && !canWrite('..') && !canWrite('.'),  'пустое имя и точки не проходят');
+
+  /* Стойка и штаб разделены не паролем, а тем, что за паролем видно.
+     Иначе с паролем стойки открывался бы /reseption/admin.html. */
+  a(['reception.html','camp-db.js','participants.json','users.json']
+      .every(n => canRead('desk', n)),                  'стойке видно то, что ей нужно');
+  a(['admin.html','landing.html','integrations.json','signups.json','server.mjs',
+     'sw.js','backups/participants-1.json'].every(n => !canRead('desk', n)),
+                                                        'стойке штаб и лендинг не видны');
+  a(['admin.html','landing.html','integrations.json'].every(n => canRead('panel', n)),
+                                                        'штабу видно всё своё');
+  a(canWrite('participants.json','desk'),               'стойка правит участников');
+  a(['landing.html','users.json','integrations.json'].every(n => !canWrite(n,'desk')),
+                                                        'стойка не правит ни лендинг, ни учётки, ни токены');
+  a(canWrite('landing.html','panel') && canWrite('landing.html'),
+                                                        'штаб правит лендинг, роль по умолчанию — штаб');
 
   /* телефон — это и есть «кто»: участника по номеру находит сервер */
   a(['+7 (900) 111-22-33', '8 900 111 22 33', '79001112233', ' 9001112233 ']
@@ -639,6 +779,10 @@ function selftest(){
 if (process.argv.includes('--selftest')) { selftest(); }
 else {
   watchPeople();
+  /* Тянем зеркало из базы и досылаем очередь. Без SUPABASE_URL функция
+     сразу возвращается — тогда сервер живёт на файлах, как раньше. */
+  db.start({ every: Number(process.env.CAMP_SYNC_MS) || 15000,
+             log: m => console.log('  база:', m) });
   /* В публичном режиме слушаем только loopback: единственный вход снаружи
      должен быть через nginx, иначе порт 8000 торчал бы в интернет в обход
      его лимитов и deny-локаций. В юните есть IPAddressDeny=any, но он
@@ -647,8 +791,10 @@ else {
      Это и есть пропуск: снаружи сюда ведёт единственная дорога — location
      /admin/ и /reseption/ в nginx под Basic auth. На ноутбуке он не нужен,
      там панели открываются с 127.0.0.1 обычным порядком. */
-  if (PUBLIC_ONLY)
-    http.createServer((req, res) => serve(req, res, true)).listen(PORT + 1, '127.0.0.1');
+  if (PUBLIC_ONLY){
+    http.createServer((req, res) => serve(req, res, 'panel')).listen(PORT + 1, '127.0.0.1');
+    http.createServer((req, res) => serve(req, res, 'desk')).listen(PORT + 2, '127.0.0.1');
+  }
 
   http.createServer(serve).listen(PORT, PUBLIC_ONLY ? '127.0.0.1' : '0.0.0.0', () => {
     const ip = Object.values(os.networkInterfaces()).flat()
@@ -656,7 +802,8 @@ else {
     if (PUBLIC_ONLY) {
       console.log(`\n  ПУБЛИЧНЫЙ РЕЖИМ: доверенных адресов нет, админка закрыта.`);
       console.log(`  Слушаю ${PORT} — сюда nginx проксирует лендинг.`);
-      console.log(`  Слушаю ${PORT + 1} — сюда /admin/ и /reseption/ под Basic auth.`);
+      console.log(`  Слушаю ${PORT + 1} — сюда /admin/ под своим паролем.`);
+      console.log(`  Слушаю ${PORT + 2} — сюда /reseption/ под своим паролем.`);
     } else {
       console.log(`\n  Штаб:      http://localhost:${PORT}/admin.html`);
       console.log(`  Участникам: http://${ip}:${PORT}/landing.html`);
