@@ -31,8 +31,59 @@ import * as db from './db.mjs';
 
 const ROOT      = import.meta.dirname;
 const PORT      = Number(process.env.CAMP_PORT) || 8000;
-const TG_TOKEN  = process.env.TG_TOKEN  || '';
-const MAX_TOKEN = process.env.MAX_TOKEN || '';
+/* Токены. Сначала integrations.json рядом — его пишет штаб в панели
+   («Доступ → Интеграции»), и это единственный способ сменить токен,
+   не заходя на сервер по ssh. Потом переменные окружения: запуск из
+   консоли остаётся прежним, а на сервере /etc/camp.env продолжает
+   работать, пока файла ещё нет.
+
+   Заполненный, но выключенный в панели бот — это выключенный бот, а не
+   повод молча вернуться к переменной окружения. Иначе выключатель не
+   выключал бы: человек снял галочку, увидел «выключено» и ушёл, а бот
+   отвечает участникам как ни в чём не бывало. */
+const INTEG = (() => {
+  try{ return JSON.parse(fs.readFileSync(path.join(ROOT, 'integrations.json'), 'utf8')); }
+  catch(_){ return {}; }               // файла нет или он битый — работаем на окружении
+})();
+export const pickToken = (blk, envVal) =>
+  blk && blk.token ? (blk.on === false ? '' : String(blk.token).trim())
+                   : (envVal || '');
+/* С базой источник токенов — она, а файл не в счёт. Панель с базой
+   пишет только в таблицу integrations (admin.html:1184), а db.mjs
+   зеркалит на диск участников и записи, но не токены — значит лежащий
+   рядом integrations.json с базой не обновляет никто и он тихо стареет.
+   Прочитать его в этом режиме хуже, чем не читать: главный сменил бы
+   токен в панели, увидел «сохранено», а бот продолжил бы со старым.
+   И выключатель перестал бы выключать — в файле осталось бы on:true.
+
+   Поэтому «или — или», как у входа: есть база — только база; нет базы —
+   только файл. Переменная окружения остаётся в обоих случаях: это не
+   залежавшийся артефакт, а осознанное действие того, кто запускает. */
+export const tokenSource = (dbOn, doc, file) => dbOn ? (doc || {}) : (file || {});
+
+let TG_TOKEN  = pickToken(INTEG.telegram, process.env.TG_TOKEN);
+let MAX_TOKEN = pickToken(INTEG.max,      process.env.MAX_TOKEN);
+let PROXY     = INTEG.proxy;
+
+/* Спрашиваем базу при запуске, а не при импорте: --selftest обещан
+   «без сети», и обещание надо держать. */
+async function resolveTokens(){
+  if (!db.configured()) return;
+  let doc = null;
+  try{
+    const rows = await db.select('integrations', 'id=eq.1&select=doc');
+    doc = (Array.isArray(rows) && rows[0] && rows[0].doc) || {};
+  }catch(err){
+    console.error('Интеграции из базы не прочитались: ' + err.message);
+    console.error('Файл рядом в этом режиме не подхватываем — он устарел. Остаётся окружение.');
+  }
+  const src = tokenSource(true, doc, INTEG);
+  TG_TOKEN  = pickToken(src.telegram, process.env.TG_TOKEN);
+  MAX_TOKEN = pickToken(src.max,      process.env.MAX_TOKEN);
+  PROXY     = src.proxy;
+  tg.token  = TG_TOKEN;
+  max.token = MAX_TOKEN;
+}
 /* кто имеет право на ручную рассылку: CAMP_ADMINS='tg:123456,max:789' */
 const ADMINS = new Set((process.env.CAMP_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean));
 
@@ -800,6 +851,30 @@ async function selftest(){
   a(dayText(camp, 0).includes(camp.days[0].events[0].ev), 'расписание дня собирается');
   a(dayText(camp, 99) === 'Такого дня в программе нет.', 'несуществующий день не роняет бота');
 
+  /* откуда берётся токен: файл панели главнее окружения, но выключатель
+     в панели должен выключать, а не откатывать на переменную */
+  a(pickToken({ on:true,  token:'из-файла' }, 'из-окружения') === 'из-файла',
+                                                       'токен берётся из панели');
+  a(pickToken({ on:false, token:'из-файла' }, 'из-окружения') === '',
+                                                       'выключенный в панели бот не поднимется на старой переменной');
+  a(pickToken({ on:true,  token:'' }, 'из-окружения') === 'из-окружения',
+                                                       'пустое поле в панели — работает окружение');
+  a(pickToken(undefined, 'из-окружения') === 'из-окружения' && pickToken(undefined, undefined) === '',
+                                                       'без файла интеграций ничего не ломается');
+  a(pickToken({ on:true, token:'  с пробелами  ' }, '') === 'с пробелами',
+                                                       'пробелы по краям токена срезаются');
+  /* с базой файл не участвует вовсе — иначе снятая в панели галочка
+     не выключала бы бота, а старый токен из файла побеждал бы новый */
+  const FILE = { telegram:{ on:true, token:'из-файла' } };
+  a(tokenSource(true,  { telegram:{ on:true, token:'из-базы' } }, FILE).telegram.token === 'из-базы',
+                                                       'с базой токен берётся из базы');
+  a(tokenSource(true,  null, FILE).telegram === undefined,
+                                                       'база не ответила — лежалый файл не подставляется');
+  a(tokenSource(false, null, FILE).telegram.token === 'из-файла',
+                                                       'без базы работает файл');
+  a(pickToken(tokenSource(true, {}, FILE).telegram, 'из-окружения') === 'из-окружения',
+                                                       'пустая база — остаётся окружение, а не файл');
+
   a(tail('+7 (900) 111-22-33') === tail('89001112233'), '+7 и 8 — один и тот же номер');
   a(tail('123') === '123' && tail('') === '',           'мусорный номер не притворяется телефоном');
   const people = [{ name:'Аня', phone:'+7 900 111-22-33', room:'12', status:'arrived', classes:[] },
@@ -943,10 +1018,22 @@ const RUN_DIRECT = /bots\.mjs$/.test(process.argv[1] || '');
 
 if (process.argv.includes('--selftest')) { await selftest(); }
 else if (RUN_DIRECT) {
+  await resolveTokens();
   const on = [tg, max].filter(b => b.token);
   if (!on.length) {
-    console.error('Нет токенов. Запуск: TG_TOKEN=… MAX_TOKEN=… node bots.mjs');
+    console.error('Нет токенов. Впишите их в панели: Доступ → Интеграции,');
+    console.error('или запустите как раньше: TG_TOKEN=… MAX_TOKEN=… node bots.mjs');
     process.exit(1);
+  }
+  /* Прокси в панели заполнить можно, а применить — нет: node здесь
+     запускается без единой зависимости, а socks5 своими руками — это
+     отдельный клиент на сотню строк ради одного лагеря. Молчать об
+     этом нельзя: человек впишет адрес, увидит «включён» и будет ждать,
+     что бот пробьётся через блокировку. Поэтому говорим прямо. */
+  if (PROXY && PROXY.on && PROXY.url) {
+    console.error('Внимание: прокси в панели задан, но бот ходит напрямую —');
+    console.error('поддержки socks5 здесь нет. Если Telegram недоступен, запускайте');
+    console.error('бота там, где он доступен, или заверните весь процесс во внешний прокси.');
   }
   watchCamp();
   on.forEach(b => b.poll(onEvent));
