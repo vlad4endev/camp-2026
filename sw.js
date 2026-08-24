@@ -32,10 +32,17 @@ self.addEventListener('activate', e => {
   );
 });
 
+/* Живые ответы сервера: занятость групп и данные лендинга. Их кэшировать
+   нельзя — иначе телефон навсегда останется на числах и расписании того
+   дня, когда его положили в кэш, и правка в штабе до него не доедет. */
+const LIVE = new Set(['/seats', '/camp']);
+
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
-  if (new URL(req.url).origin !== location.origin) return;
+  const url = new URL(req.url);
+  if (url.origin !== location.origin) return;
+  if (LIVE.has(url.pathname)) return;          // мимо кэша, прямо в сеть
 
   /* stale-while-revalidate: сразу отдаём копию из кэша — в лагере сети нет,
      ждать таймаута запроса нельзя. Параллельно тихо тянем свежую версию,

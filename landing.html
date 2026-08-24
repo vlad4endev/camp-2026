@@ -421,11 +421,6 @@ section{
 .ann-pinmark svg{width:11px;height:11px;}
 .ann-title{font-size:15.5px;font-weight:700;color:var(--ink);margin-bottom:6px;letter-spacing:-.015em;line-height:1.3;}
 .ann-txt{font-size:13.5px;color:var(--muted);line-height:1.55;}
-.board-empty{
-  margin-top:32px;padding:34px 24px;text-align:center;
-  border:1.5px dashed var(--border-2);border-radius:var(--r-lg);
-  color:var(--muted);font-size:14px;
-}
 
 /* ══════════════════════════════════════════════
    ТЕМАТИКА ДНЕЙ
@@ -632,7 +627,9 @@ section{
 .class-meta span.cap.no{background:#FFF0EC;color:#B23A22;}
 
 .su-modal{
-  border:0;padding:26px 24px 20px;width:min(400px,calc(100vw - 32px));
+  /* margin:auto — не «на всякий случай»: глобальный сброс * {margin:0}
+     выше отбирает у <dialog> центрирование, которое ему даёт браузер */
+  border:0;margin:auto;padding:26px 24px 20px;width:min(400px,calc(100vw - 32px));
   background:var(--white);color:var(--ink);border-radius:var(--r-lg);
   box-shadow:var(--sh-3);text-align:center;
 }
@@ -925,8 +922,8 @@ const CAMP={
               phoneLabel:'Номер телефона', close:'Закрыть',
               /* {name} — имя из карточки участника, {cls} — группа,
                  {left} — сколько мест осталось, {cap} — сколько всего */
-              ask:     {h:'Записаться на {cls}', go:'Найти меня и записать',
-                        p:'Введите номер телефона, который вы оставляли при регистрации в лагерь — найдём вас в списке. Номер нужен один раз.'},
+              ask:     {h:'Записаться', go:'Найти меня и записать',
+                        p:'<b>{cls}</b><br>Введите номер телефона, который оставляли при регистрации в лагерь — найдём вас в списке. Номер спросим один раз.'},
               wait:    {h:'Ищем вас в списке…', p:'Секунду.'},
               done:    {h:'Готово, {name}!', go:'', p:'Вы записаны: <b>{cls}</b>.{left}'},
               undone:  {h:'Запись снята', p:'<b>{cls}</b> — вас больше нет в списке.'},
@@ -1442,16 +1439,24 @@ function renderThemes(){
   }).join('');
 }
 
+/* Разделу нечего показать — прячем его вместе со ссылкой в меню:
+   пустая секция и ссылка в пустоту читаются как «страница не доделана».
+   Вызывается при каждой отрисовке: содержимое могут добавить в админке
+   и в середине лагеря — тогда раздел поднимется сам. */
+function showSection(id,has){
+  document.getElementById(id).hidden=!has;
+  document.querySelectorAll(`a[href="#${id}"]`).forEach(a=>{a.hidden=!has;});
+}
+
 function renderBoard(){
   const now=NOW();
   const list=[...CAMP.announcements]
     .map(a=>({...a, when:new Date(a.at.replace(' ','T'))}))
     .sort((x,y)=>(y.pin?1:0)-(x.pin?1:0) || y.when-x.when);
   const box=document.getElementById('board-body');
-  if(!list.length){
-    box.innerHTML='<div class="board-empty">Пока объявлений нет. Загляните позже.</div>';
-    return;
-  }
+  const has=list.length>0;
+  showSection('board',has);
+  if(!has){ box.innerHTML=''; return; }
   box.innerHTML='<div class="board-grid stagger">'+list.map(a=>{
     const t=ANN_TAG[a.tag]||{bg:'#F1F4F2',fg:'#4A5F52'};
     return `<article class="ann reveal${a.pin?' pin':''}">
@@ -1499,6 +1504,8 @@ function classCard(c,i){
   </div>`;
 }
 function renderClasses(){
+  /* мастер-классы ведутся в админке (раздел «Мастер-классы»); пусто — нет раздела */
+  showSection('classes',CAMP.classes.length>0);
   document.getElementById('classes-body').innerHTML=classGroups().map(g=>{
     const d=CAMP.days.find(x=>x.dow===g.day);
     const head=!g.day?'':`<div class="class-day reveal">
@@ -1511,6 +1518,8 @@ function renderClasses(){
 }
 
 function renderInfo(){
+  /* карточки памятки ведутся в админке (раздел «Памятка»); пусто — нет раздела */
+  showSection('info',CAMP.info.length>0);
   document.getElementById('info-body').innerHTML=CAMP.info.map(o=>`
     <div class="info-card reveal">
       <div class="info-icon" style="background:linear-gradient(140deg,${o.grad});">${svgIcon(o.icon,23,'white')}</div>
@@ -1584,9 +1593,50 @@ function tick(){
   renderEvents(activeDay);
   observeReveals();
 }
-applyTexts();renderLegend();renderClasses();renderInfo();tick();
-/* раз в 30 с: часы, прогресс события, «через сколько», подсветка строк */
-setInterval(tick,30000);
+/* Всё, что собирается из CAMP. Отдельно от tick(), потому что tick —
+   про течение времени, а это — про то, что данные стали другими. */
+function renderAll(){
+  applyTexts();renderLegend();renderClasses();renderInfo();tick();
+}
+renderAll();
+
+/* ── СИНХРОНИЗАЦИЯ СО ШТАБОМ ──
+   Штаб правит landing.html, сервер разбирает из него блок CAMP и отдаёт
+   на GET /camp. Забираем его при открытии и раз в 30 секунд: правку в
+   админке телефон подхватывает сам, без перезагрузки страницы.
+   CAMP меняем на месте — на строку «const CAMP={…};» смотрят регулярки
+   в admin.html и server.mjs, ломать их ради let нельзя.
+   Сети нет — молча живём на том, что вшито в файл; в лагере это норма. */
+let campV=null;
+async function campSync(){
+  let d;
+  try{
+    const r=await fetch('camp'+(campV?'?v='+encodeURIComponent(campV):''),{cache:'no-store'});
+    if(!r.ok) return;
+    d=await r.json();
+  }catch(_){ return; }
+  const v=campV; campV=d.v||null;
+  if(d.same||!d.camp) return;
+  /* первый ответ после открытия страницы обычно совпадает с вшитым —
+     перерисовывать нечего, иначе на ровном месте моргнут анимации */
+  if(v===null&&JSON.stringify(d.camp)===JSON.stringify(CAMP)) return;
+  for(const k of Object.keys(CAMP)) delete CAMP[k];
+  Object.assign(CAMP,d.camp);
+  renderAll();
+  suPaint();                      // кнопки записи собрались заново — вернуть им состояние
+}
+
+/* Всё, что должно быть свежим: часы, прогресс события, «через сколько»,
+   подсветка строк, данные от штаба и занятость групп. */
+function refresh(){ tick(); campSync(); suSync(); }
+setInterval(refresh,30000);
+
+/* Телефон полежал в кармане — таймеры там заморожены, и после разблокировки
+   человек до полуминуты смотрел бы на вчерашнее. Экран включили — обновляем
+   сразу: момент, когда на страницу смотрят, и есть «тут же». */
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible') refresh();
+});
 
 /* ── навбар ── */
 const nav=document.querySelector('.topnav');
@@ -1860,6 +1910,9 @@ function suInit(){
   suSync();
 }
 suInit();
+/* Первый заход: страница могла приехать из кэша воркера, а штаб её уже
+   поправил. Спрашиваем сервер сразу, не дожидаясь тридцати секунд. */
+campSync();
 
 /* ═══════════════════════════════════════════════════════════
    САМОПРОВЕРКА — откройте страницу с ?selftest и смотрите консоль
@@ -1979,6 +2032,36 @@ function selftest(){
   eq(gr.reduce((n,g)=>n+g.cards.length,0),CAMP.classes.length,'ни одна карточка не потерялась при группировке');
   eq(document.querySelectorAll('#classes-body .class-day').length,
      gr.filter(g=>g.day).length,'у каждого дня свой заголовок');
+
+  /* объявления пустые — раздела и ссылки на него быть не должно */
+  const keep=CAMP.announcements;
+  CAMP.announcements=[]; renderBoard();
+  eq(document.getElementById('board').hidden,true,'без объявлений раздел скрыт');
+  eq([...document.querySelectorAll('a[href="#board"]')].every(a=>a.hidden),true,
+     'ссылка в меню тоже уходит');
+  const keepCls=CAMP.classes;
+  CAMP.classes=[]; renderClasses();
+  eq(document.getElementById('classes').hidden,true,'без мастер-классов раздел скрыт');
+  eq([...document.querySelectorAll('a[href="#classes"]')].every(a=>a.hidden),true,
+     'ссылка «Мастер-классы» тоже уходит');
+  CAMP.classes=keepCls; renderClasses();
+  eq(document.getElementById('classes').hidden,false,'мастер-классы вернулись — раздел на месте');
+  eq(document.querySelectorAll('#classes-body .class-btn').length,keepCls.length,
+     'все мастер-классы из админки отрисованы');
+
+  const keepInfo=CAMP.info;
+  CAMP.info=[]; renderInfo();
+  eq(document.getElementById('info').hidden,true,'без памятки раздел «Полезное» скрыт');
+  eq([...document.querySelectorAll('a[href="#info"]')].every(a=>a.hidden),true,
+     'ссылка «Полезное» тоже уходит');
+  CAMP.info=keepInfo; renderInfo();
+  eq(document.getElementById('info').hidden,false,'памятка вернулась — раздел на месте');
+  eq(document.querySelectorAll('#info-body .info-card').length,keepInfo.length,
+     'все карточки памятки из админки отрисованы');
+
+  CAMP.announcements=keep; renderBoard();
+  eq(document.getElementById('board').hidden,false,'объявления вернулись — раздел на месте');
+  eq(document.querySelectorAll('#board-body .ann').length,keep.length,'все объявления отрисованы');
 
   console.log('%c✓ самопроверка пройдена','color:#48B873;font-weight:bold');
 }
