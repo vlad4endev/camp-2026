@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-HOST=${CAMP_HOST:-camp@camp.offline-tambov.ru}
+HOST=${CAMP_HOST:-root@camp.offline-tambov.ru}
 DIR=${CAMP_DIR:-/srv/camp}
 
 pull(){
@@ -48,11 +48,12 @@ node -e '
 # источников, — то есть все записи с телефонов. Мусор в папке не страшен,
 # наружу его всё равно не отдаст белый список.
 rsync -az \
-  landing.html sw.js manifest.webmanifest server.mjs icons \
+  landing.html sw.js manifest.webmanifest server.mjs icons deploy \
   "$TMP/participants.json" \
   "$HOST:$DIR/"
 
-ssh "$HOST" "sudo systemctl restart camp"
+# chown: rsync пришёл под root, а сервис работает под camp
+ssh "$HOST" "chown -R camp:camp $DIR; systemctl restart camp"
 echo "  выложено, сервис перезапущен"
 pull
 echo

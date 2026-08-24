@@ -34,7 +34,7 @@ adduser --system --home /srv/camp --shell /bin/bash camp
 mkdir -p /srv/camp && chown camp:camp /srv/camp
 ```
 
-Выложить файлы с ноутбука:
+Выложить файлы с ноутбука (вместе с ними уедет и папка `deploy/`):
 
 ```bash
 ./deploy/publish.sh
