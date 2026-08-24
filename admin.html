@@ -1349,7 +1349,20 @@ async function gateBoot(){
   }
 
   const s = CampDB.session();
-  if(!s || !s.access) return door();          // не вошёл — на дверь
+  if(!s || !s.access){
+    /* Токены Supabase живут в sessionStorage ВКЛАДКИ — в новой вкладке их
+       нет, а серверная кука есть. Уйти на дверь, не спросив сервер, —
+       петля: дверь по куке тут же возвращает сюда. Кука подписана
+       (auth.mjs), сервер сверяет роль на каждом запросе — этого входа
+       достаточно; живую роль из базы перепроверит следующий вход по
+       паролю. */
+    const me = await serverWho();
+    if(!me) return door();
+    const other = HOME(me.role);
+    if(other) return location.replace(other);
+    return signIn({ login: me.login || me.name, name: me.name || me.login,
+                    role: me.role, off:false });
+  }
 
   let me = null;
   try{ me = await CampDB.staffMe(); }catch(_){}

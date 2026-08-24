@@ -908,7 +908,15 @@ async function boot(){
   }
 
   const s = CampDB.session();
-  if(!s || !s.access) return door();            // не вошёл — на дверь
+  if(!s || !s.access){
+    /* Токены Supabase живут в sessionStorage ВКЛАДКИ — в новой вкладке их
+       нет, а серверная кука есть. Уйти на дверь, не спросив сервер, —
+       петля: дверь по куке тут же возвращает сюда. */
+    const me = await serverWho();
+    if(!me) return door();
+    if(!DESK_ROLES.includes(me.role)) return location.replace('admin.html');
+    return signIn({ login: me.login || me.name, name: me.name || me.login, role: me.role });
+  }
 
   let me = null;
   try{ me = await CampDB.staffMe(); }catch(_){}
