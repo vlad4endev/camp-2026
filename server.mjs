@@ -21,7 +21,13 @@
    Админку открывать на этом же ноутбуке: http://localhost:8000/admin.html
    (File System Access API работает на localhost — она пишет landing.html
    прямо в эту папку, сервер сразу отдаёт новую версию).
-   Участникам давать: http://<ip-ноутбука>:8000/landing.html                 */
+   Участникам давать: http://<ip-ноутбука>:8000/landing.html
+
+   На домене (camp.offline-tambov.ru) — тот же файл, но с CAMP_PUBLIC=1:
+       CAMP_PUBLIC=1 node server.mjs 8000
+   Тогда доверенных адресов нет вообще: наружу уходит только белый список,
+   админка не открывается ни с какого адреса и остаётся на ноутбуке.
+   Подробности и конфиги — в deploy/README.md.                              */
 
 import http from 'node:http';
 import fs   from 'node:fs';
@@ -70,6 +76,45 @@ export function safePath(urlPath){
 
 export const isLocal = addr =>
   addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+
+/* ПУБЛИЧНЫЙ РЕЖИМ: CAMP_PUBLIC=1 — сервер стоит за nginx на домене.
+
+   На ноутбуке в лагере «пришло с 127.0.0.1» означает «это сам организатор»:
+   больше на loopback никого нет, и isLocal() — честная граница доверия.
+   За обратным прокси эти два факта расходятся. nginx стоит на той же
+   машине, поэтому КАЖДЫЙ запрос из интернета приходит с 127.0.0.1 —
+   и isLocal() отдал бы всему миру admin.html, users.json и участников.
+
+   Поэтому в публичном режиме доверенных нет вообще: наружу уходит только
+   белый список, а админка не открывается ни с какого адреса. Так и надо:
+   она пишет файлы рядом с собой через File System Access API, на сервере
+   ей нечего делать — она остаётся на ноутбуке организатора. */
+const PUBLIC_ONLY = process.env.CAMP_PUBLIC === '1';
+
+export const trusted = (addr, publicOnly = PUBLIC_ONLY) => !publicOnly && isLocal(addr);
+
+/* За прокси все соединения приходят с 127.0.0.1, так что «кто это» для
+   счётчика частоты берём из X-Real-IP, который ставит nginx. Заголовку
+   верим ТОЛЬКО здесь: подделка X-Real-IP даёт злоумышленнику свежий лимит
+   запросов и ничего больше — прав она не даёт, потому что прав в публичном
+   режиме не выдаётся никому (см. trusted() выше). */
+const whoIP = req => (PUBLIC_ONLY && String(req.headers['x-real-ip'] || '').trim())
+                  || req.socket.remoteAddress || '';
+
+/* Ограничитель частоты для POST /me и /signup. В лагерной Wi-Fi он был не
+   нужен — там свои. На домене POST /me превращается в оракул «есть ли
+   такой номер в лагере», и отвечает он именем и комнатой. Перебрать все
+   10 цифр нереально, а проверить сотню знакомых номеров — минутное дело.
+   30 запросов в минуту на адрес: человеку с телефоном хватает с запасом. */
+const RATE = { max: 30, win: 60_000 };
+const hits = new Map();
+export function tooOften(ip, now = Date.now(), store = hits){
+  if (store.size > 5000)
+    for (const [k, v] of store) if (now > v.until) store.delete(k);
+  const rec = store.get(ip);
+  if (!rec || now > rec.until){ store.set(ip, { n:1, until: now + RATE.win }); return false; }
+  return ++rec.n > RATE.max;
+}
 
 /* ── 2. Самоверсионирование кэша ──────────────────────────────── */
 
@@ -303,13 +348,16 @@ function seats(send){
 /* ── 4. Сервер ────────────────────────────────────────────────── */
 
 function serve(req, res){
-  const local = isLocal(req.socket.remoteAddress);
+  const local = trusted(req.socket.remoteAddress);
   const send = (code, body, type='text/plain; charset=utf-8') =>
     res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-cache' }).end(body);
 
   const route = req.url.split('?')[0];
-  if (req.method === 'POST' && route === '/signup') return signup(req, res, send);
-  if (req.method === 'POST' && route === '/me')     return me(req, res, send);
+  if (req.method === 'POST' && (route === '/signup' || route === '/me')){
+    if (!local && tooOften(whoIP(req)))
+      return send(429, JSON.stringify({ ok:false, error:'too_often' }), JSONT);
+    return route === '/signup' ? signup(req, res, send) : me(req, res, send);
+  }
   if (req.method === 'GET'  && route === '/seats')  return seats(send);
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, 'Только GET');
 
@@ -359,6 +407,22 @@ function selftest(){
   a(safePath('/landing.html').startsWith(ROOT),        'обычный путь внутри папки');
   a(isLocal('::ffff:127.0.0.1') && isLocal('::1'),     'loopback распознан');
   a(!isLocal('192.168.1.5'),                           'адрес из Wi-Fi не loopback');
+
+  /* Главный инвариант деплоя: за nginx весь интернет приходит с 127.0.0.1,
+     и привилегий этот адрес там давать не должен. */
+  a(trusted('127.0.0.1', false) && trusted('::1', false), 'на ноутбуке loopback — это организатор');
+  a(!trusted('127.0.0.1', true) && !trusted('::1', true), 'на домене loopback привилегий не даёт');
+  a(['192.168.1.5','10.0.0.7','203.0.113.9']
+      .every(ip => !trusted(ip, false) && !trusted(ip, true)),
+                                                        'чужой адрес не привилегирован никогда');
+
+  /* Лимит частоты: 30 в минуту, 31-й отбит, через минуту счёт с нуля. */
+  const box = new Map(), t0 = 1_000_000;
+  a(Array.from({ length:30 }, () => tooOften('ip', t0, box)).every(v => v === false),
+                                                        '30 запросов в минуту проходят');
+  a(tooOften('ip', t0, box),                            '31-й запрос отбит');
+  a(!tooOften('ip', t0 + 60_001, box),                  'через минуту счёт с нуля');
+  a(!tooOften('другой', t0 + 60_001, box),              'лимит считается по каждому адресу свой');
   const sw = "const CACHE = 'offline-camp-v1';\nconst SHELL=[];";
   const v1 = swBody(sw, 'landing A'), v2 = swBody(sw, 'landing B');
   a(v1 !== v2,                                         'версия кэша меняется вместе с лендингом');
@@ -447,8 +511,13 @@ else {
   http.createServer(serve).listen(PORT, '0.0.0.0', () => {
     const ip = Object.values(os.networkInterfaces()).flat()
       .find(i => i && i.family === 'IPv4' && !i.internal)?.address || 'localhost';
-    console.log(`\n  Штаб:      http://localhost:${PORT}/admin.html`);
-    console.log(`  Участникам: http://${ip}:${PORT}/landing.html`);
+    if (PUBLIC_ONLY) {
+      console.log(`\n  ПУБЛИЧНЫЙ РЕЖИМ: доверенных адресов нет, админка закрыта.`);
+      console.log(`  Слушаю ${PORT} — nginx должен проксировать сюда.`);
+    } else {
+      console.log(`\n  Штаб:      http://localhost:${PORT}/admin.html`);
+      console.log(`  Участникам: http://${ip}:${PORT}/landing.html`);
+    }
     console.log(`  В сеть отдаются только: ${[...PUBLIC_FILES].join(', ')}, ` +
                 `${[...PUBLIC_DIRS].map(d => d + '/*').join(', ')}`);
     console.log(`  Записи на мастер-классы принимаются в signups.json ` +

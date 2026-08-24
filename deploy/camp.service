@@ -1,0 +1,37 @@
+# systemd-юнит: /etc/systemd/system/camp.service
+# Держит server.mjs поднятым и возвращает его после перезагрузки.
+#
+#   sudo systemctl enable --now camp
+#   sudo systemctl status camp
+#   journalctl -u camp -f          # что пишет сервер
+
+[Unit]
+Description=Офлайн Кемп — лендинг и запись на мастер-классы
+After=network.target
+
+[Service]
+Type=simple
+User=camp
+WorkingDirectory=/srv/camp
+ExecStart=/usr/bin/node /srv/camp/server.mjs 8000
+Restart=always
+RestartSec=2
+
+# CAMP_PUBLIC=1 — единственное, что отделяет домен от ноутбука.
+# Без него сервер сочтёт каждый запрос из-за nginx запросом организатора
+# и отдаст в интернет админку, users.json и участников.
+Environment=CAMP_PUBLIC=1
+
+# Сервер пишет только signups.json и backups/ в своей папке — больше
+# ничего в системе ему не нужно.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/camp
+# Слушает только loopback (наружу смотрит nginx), внешняя сеть не нужна
+IPAddressAllow=localhost
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target
