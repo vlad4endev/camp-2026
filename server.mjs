@@ -142,26 +142,32 @@ export function swBody(swText, landingText){
 
 /* Админка бэкапит участников один раз за сессию — а сумма оплат
    перезаписывается каждые две секунды. Храним 20 последних состояний. */
+let lastSnap = '';
+export function snapPeople(){
+  const src = path.join(ROOT, 'participants.json');
+  const dir = path.join(ROOT, 'backups');
+  try {
+    const text = fs.readFileSync(src, 'utf8');
+    if (text === lastSnap || !text.trim()) return;
+    lastSnap = text;
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    fs.writeFileSync(path.join(dir, `participants-${stamp}.json`), text);
+    const old = fs.readdirSync(dir).filter(n => n.startsWith('participants-')).sort();
+    for (const n of old.slice(0, Math.max(0, old.length - 20)))
+      fs.rmSync(path.join(dir, n), { force: true });
+  } catch (err) { console.error('снимок участников не удался:', err.message); }
+}
+
+/* fs.watch ловит правки извне — rsync с ноутбука. Записи из панели он бы
+   пропустил: PUT кладёт файл через .tmp + rename, а rename подменяет inode
+   и слежение за путём срывается. Поэтому PUT зовёт snapPeople() сам. */
 function watchPeople(){
   const src = path.join(ROOT, 'participants.json');
   if (!fs.existsSync(src)) return;
-  const dir = path.join(ROOT, 'backups');
-  let last = '', t;
-  const snap = () => {
-    try {
-      const text = fs.readFileSync(src, 'utf8');
-      if (text === last || !text.trim()) return;
-      last = text;
-      fs.mkdirSync(dir, { recursive: true });
-      const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-      fs.writeFileSync(path.join(dir, `participants-${stamp}.json`), text);
-      const old = fs.readdirSync(dir).filter(n => n.startsWith('participants-')).sort();
-      for (const n of old.slice(0, Math.max(0, old.length - 20)))
-        fs.rmSync(path.join(dir, n), { force: true });
-    } catch (err) { console.error('снимок участников не удался:', err.message); }
-  };
-  snap();
-  fs.watch(src, () => { clearTimeout(t); t = setTimeout(snap, 2000); });
+  let t;
+  snapPeople();
+  fs.watch(src, () => { clearTimeout(t); t = setTimeout(snapPeople, 2000); });
 }
 
 /* ── 3.5 Записи на мастер-классы ──────────────────────────────── */
@@ -377,10 +383,71 @@ function camp(send, was){
     : { v:c.v, camp:c.camp }), JSONT);
 }
 
+/* ── 3.7 Запись из панели (PUT) ────────────────────────────────
+
+   Панели правят файлы у себя же на сервере. Доступно ТОЛЬКО на порту
+   панели (PORT+1, слушает loopback): в публичный порт PUT не приходит
+   никогда, там метод не разрешён вообще.
+
+   Разрешённые имена перечислены списком. Это не паранойя: safePath не
+   пускает за пределы папки, но и внутри писать можно далеко не всё —
+   server.mjs, sw.js и bots.mjs правит только человек через git.
+
+   JSON проверяем разбором до записи: битый participants.json хуже
+   отсутствующего — сервер сочтёт его пустым и начнёт отвечать «нет
+   такого номера» всем участникам сразу. */
+const WRITABLE = new Set(['landing.html', 'participants.json',
+                          'users.json', 'integrations.json']);
+export const canWrite = name => WRITABLE.has(name);
+const MAX_PUT  = 4 * 1024 * 1024;              // лендинг ~310 КБ, запас большой
+
+function put(req, res, send){
+  /* Имя берём из маршрута целиком, а не basename: тот срезал бы путь и
+     принял PUT /../landing.html как landing.html. Наружу папки это всё
+     равно не выводит (join с ROOT), но поведение должно совпадать с
+     canWrite() из проверок, а не «случайно быть безопасным». */
+  const name = req.url.split('?')[0].replace(/^\//, '');
+  if (!WRITABLE.has(name))
+    return send(403, JSON.stringify({ ok:false, error:'not_writable', name }), JSONT);
+
+  let text = '', over = false;
+  req.on('data', c => {
+    text += c;
+    if (text.length > MAX_PUT && !over){
+      over = true;
+      send(413, JSON.stringify({ ok:false, error:'too_big' }), JSONT);
+      req.destroy();
+    }
+  });
+  req.on('end', () => {
+    if (res.writableEnded) return;
+    if (!text.trim())
+      return send(400, JSON.stringify({ ok:false, error:'empty' }), JSONT);
+    if (name.endsWith('.json')){
+      try { JSON.parse(text); }
+      catch { return send(400, JSON.stringify({ ok:false, error:'bad_json' }), JSONT) }
+    }
+    const abs = path.join(ROOT, name);
+    try {
+      fs.writeFileSync(abs + '.tmp', text);     // .tmp + rename: панель не должна
+      fs.renameSync(abs + '.tmp', abs);         // прочитать файл на середине записи
+    } catch (err) {
+      return send(500, JSON.stringify({ ok:false, error:err.message }), JSONT);
+    }
+    if (name === 'participants.json') snapPeople();
+    send(200, JSON.stringify({ ok:true, bytes: Buffer.byteLength(text) }), JSONT);
+  });
+}
+
 /* ── 4. Сервер ────────────────────────────────────────────────── */
 
-function serve(req, res){
-  const local = trusted(req.socket.remoteAddress);
+/* panel=true — запрос пришёл на порт панели. Этот порт слушает только
+   loopback, а снаружи на него ведёт единственный путь: location /admin/
+   в nginx, закрытый Basic auth. Поэтому «пришло сюда» = «гейт пройден».
+   Заголовкам при этом не верим нигде: порт подделать нельзя, заголовок —
+   можно. */
+function serve(req, res, panel = false){
+  const local = panel || trusted(req.socket.remoteAddress);
   const send = (code, body, type='text/plain; charset=utf-8') =>
     res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-cache' }).end(body);
 
@@ -393,6 +460,10 @@ function serve(req, res){
   if (req.method === 'GET'  && route === '/seats')  return seats(send);
   if (req.method === 'GET'  && route === '/camp')
     return camp(send, new URL(req.url, 'http://x').searchParams.get('v'));
+  if (req.method === 'PUT'){
+    if (!local) return send(405, 'Только GET');   // публичный порт не пишет никогда
+    return put(req, res, send);
+  }
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, 'Только GET');
 
   const abs = safePath(req.url);
@@ -417,7 +488,11 @@ function serve(req, res){
     } catch (err) { return send(500, 'sw.js: ' + err.message) }
   }
 
+  /* X-Mtime в миллисекундах: панель сравнивает его с временем, которое
+     запомнила при чтении, и не затирает файл, изменившийся тем временем.
+     Last-Modified не годится — у него разрешение в секунду. */
   res.writeHead(200, { 'Content-Type': type, 'Content-Length': stat.size,
+                       'X-Mtime': String(Math.round(stat.mtimeMs)),
                        'Cache-Control': 'no-cache' });
   if (req.method === 'HEAD') return res.end();
   fs.createReadStream(abs).pipe(res).on('error', () => res.destroy());
@@ -487,6 +562,16 @@ function selftest(){
      ../ из разрешённой папки не открывает доступ к соседнему файлу */
   a(!P('signups.json') && !P('signups.json.tmp'),      'записи на МК наружу не отдаются');
   a(!P('integrations.json'),                            'токены ботов наружу не отдаются');
+
+  /* Что панель имеет право перезаписать. Код и воркер — только через git:
+     PUT туда означал бы удалённое исполнение кода на сервере. */
+  a(['landing.html','participants.json','users.json','integrations.json'].every(canWrite),
+                                                        'панель пишет свои четыре файла');
+  a(['server.mjs','bots.mjs','sw.js','manifest.webmanifest','signups.json',
+     'landing.backup.html','.gitignore','../landing.html','icons/icon-192.png',
+     'landing.html.tmp','participants.json.tmp'].every(n => !canWrite(n)),
+                                                        'ничего другого панель перезаписать не может');
+  a(!canWrite('') && !canWrite('..') && !canWrite('.'),  'пустое имя и точки не проходят');
 
   /* телефон — это и есть «кто»: участника по номеру находит сервер */
   a(['+7 (900) 111-22-33', '8 900 111 22 33', '79001112233', ' 9001112233 ']
@@ -558,12 +643,20 @@ else {
      должен быть через nginx, иначе порт 8000 торчал бы в интернет в обход
      его лимитов и deny-локаций. В юните есть IPAddressDeny=any, но он
      зависит от BPF в cgroup — а эта строка не зависит ни от чего. */
+  /* Порт панели поднимаем только в публичном режиме и только на loopback.
+     Это и есть пропуск: снаружи сюда ведёт единственная дорога — location
+     /admin/ и /reseption/ в nginx под Basic auth. На ноутбуке он не нужен,
+     там панели открываются с 127.0.0.1 обычным порядком. */
+  if (PUBLIC_ONLY)
+    http.createServer((req, res) => serve(req, res, true)).listen(PORT + 1, '127.0.0.1');
+
   http.createServer(serve).listen(PORT, PUBLIC_ONLY ? '127.0.0.1' : '0.0.0.0', () => {
     const ip = Object.values(os.networkInterfaces()).flat()
       .find(i => i && i.family === 'IPv4' && !i.internal)?.address || 'localhost';
     if (PUBLIC_ONLY) {
       console.log(`\n  ПУБЛИЧНЫЙ РЕЖИМ: доверенных адресов нет, админка закрыта.`);
-      console.log(`  Слушаю ${PORT} — nginx должен проксировать сюда.`);
+      console.log(`  Слушаю ${PORT} — сюда nginx проксирует лендинг.`);
+      console.log(`  Слушаю ${PORT + 1} — сюда /admin/ и /reseption/ под Basic auth.`);
     } else {
       console.log(`\n  Штаб:      http://localhost:${PORT}/admin.html`);
       console.log(`  Участникам: http://${ip}:${PORT}/landing.html`);
