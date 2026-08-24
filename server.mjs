@@ -122,6 +122,20 @@ const NEVER = new Set(['users.json']);
    такой файл» (данные, там только 404). */
 const PANELS = new Set(['admin.html', 'reception.html']);
 
+/* ДВЕРЬ И ПАНЕЛЬ — ОДИН АДРЕС. /admin/ это не «перекинуть на вход», а сам
+   штаб: не вошёл — на этом же адресе показываем вход, вошёл — панель.
+
+   Так адрес в закладке и на бумажке остаётся одним и тем же до входа и
+   после, а «войти» перестаёт быть отдельным местом, которое надо помнить
+   и диктовать вожатым. Отдельная страница входа при этом никуда не
+   девается: /enter.html работает как работал, просто перестаёт быть
+   единственной дверью. */
+const DOOR = { '/admin/':'admin.html', '/reseption/':'reception.html' };
+export const doorOf = url => {
+  try { return DOOR[new URL(url, 'http://x').pathname] ? new URL(url, 'http://x').pathname : ''; }
+  catch { return ''; }
+};
+
 function isPublic(relPath){
   const parts = relPath.split(path.sep);
   return parts.length === 1
@@ -984,11 +998,19 @@ function serve(req, res, portRole = 'public'){
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, 'Только GET');
 
-  const abs = safePath(req.url);
+  const door = doorOf(req.url);
+  let abs = safePath(door ? '/' + DOOR[door] : req.url);
   if (!abs) return send(403, 'Нельзя выходить за пределы папки');
 
-  const name = path.basename(abs);
-  const rel  = path.relative(ROOT, abs);
+  let name = path.basename(abs);
+  let rel  = path.relative(ROOT, abs);
+
+  /* Пришли в дверь без входа — отдаём страницу входа ЗДЕСЬ ЖЕ, кодом 200,
+     а не уводим на /enter.html. Адрес в строке не меняется, поэтому после
+     входа человек остаётся там, куда шёл. */
+  if (door && !sess){
+    abs = path.join(ROOT, 'enter.html'); name = rel = 'enter.html';
+  }
   /* Хэши паролей — никому и никогда, даже с loopback. */
   if (NEVER.has(rel))
     return send(404, 'Не найдено');
@@ -1006,7 +1028,7 @@ function serve(req, res, portRole = 'public'){
      нарочно не подсказывает, существует ли файл. Про сами панели скрывать
      нечего — они лежат в публичном репозитории на виду. */
   if (PANELS.has(rel) && !(local && canRead(role, rel))){
-    const to = sess ? (SRV_ROLE[sess.role] === 'desk' ? '/reception.html' : '/admin.html')
+    const to = sess ? (SRV_ROLE[sess.role] === 'desk' ? '/reseption/' : '/admin/')
                     : '/enter.html';
     if (to !== '/' + rel)
       return res.writeHead(302, { Location: to, 'Cache-Control':'no-store' }).end();
@@ -1409,6 +1431,20 @@ async function smoke(){
   a(await hit('/seats') === 200,                        'GET /seats жив');
   a(await hit('/camp') === 200,                         'GET /camp жив');
   a(await hit('/enter.html') === 200,                   'дверь открывается');
+
+  /* Дверь на адресе панели. Проверяем именно КОД: 200 значит «вход показан
+     здесь же», а 301 или 302 означали бы, что адрес в строке сменился — то
+     самое, от чего уходим. Заодно смотрим на тело: без сессии по адресу
+     штаба обязана лежать страница входа, а не сам штаб. */
+  a(await hit('/admin/')     === 200,                   '/admin/ отвечает сам, а не уводит');
+  a(await hit('/reseption/') === 200,                   '/reseption/ отвечает сам, а не уводит');
+  const doorBody = await (await fetch(base + '/admin/')).text();
+  a(doorBody.includes('<title>Вход') && !doorBody.includes('<title>Админ-панель'),
+                                                        'без входа по адресу штаба лежит вход, а не штаб');
+  a(doorOf('/admin/') === '/admin/' && doorOf('/reseption/') === '/reseption/',
+                                                        'двери опознаются');
+  a(doorOf('/admin/participants.json') === '' && doorOf('/admin.html') === '',
+                                                        'дверью считается только сам адрес, не всё под ним');
 
   /* Вход. Настроек базы в проверке нет, поэтому режим файловый: пароль
      заведомо не подойдёт, и это ровно то, что проверяем — отказ, а не
