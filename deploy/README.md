@@ -26,10 +26,26 @@
 | https://camp.offline-tambov.ru/admin/ | штаб |
 | https://camp.offline-tambov.ru/reseption/ | ресепшен |
 
-Панели закрыты **двумя** слоями. Первый — Basic auth в nginx: пароль
-проверяется до того, как отдан хоть один байт, поэтому `users.json` и
-карточки участников недоступны без него в принципе. Второй — вход внутри
-панели по `users.json` с ролями, он же был и раньше.
+У штаба и ресепшена **разные пароли и разные порты**. Разные пароли сами
+по себе были бы косметикой: с паролем стойки открылся бы
+`/reseption/admin.html`, потому что один порт отдаёт всё. Поэтому у каждой
+панели свой список того, что за паролем видно:
+
+| | Штаб (8001) | Стойка (8002) |
+|---|---|---|
+| `admin.html` | видит | **404** |
+| `reception.html` | видит | видит |
+| `participants.json` | читает и пишет | читает и пишет |
+| `users.json` | читает и пишет | только читает (нужен для входа) |
+| `landing.html` | читает и пишет | **404** |
+| `integrations.json` (токены ботов) | читает и пишет | **404** |
+| `signups.json` (записи на МК) | читает | **404** |
+
+Пароль у стойки — это пароль человека, который принимает деньги, а не
+человека, который правит расписание.
+
+Поверх этого остаётся второй слой — вход внутри панели по `users.json`
+с ролями, он же был и раньше.
 
 ## Как это устроено
 
@@ -43,17 +59,19 @@
 ноутбук <──── rsync ──────────────────────────────  сервер   (копия ДАННЫХ)
 ```
 
-`server.mjs` слушает два порта:
+`server.mjs` слушает три порта:
 
 | Порт | Кто приходит | Что доступно |
 |---|---|---|
 | 8000 | весь интернет через nginx | белый список: лендинг, воркер, манифест, иконки, `/seats`, `/signup`, `/me` |
-| 8001 | только `/admin/` и `/reseption/` через Basic auth | всё, плюс `PUT` четырёх файлов |
+| 8001 | `/admin/` под своим паролем | всё, плюс `PUT` четырёх файлов |
+| 8002 | `/reseption/` под своим паролем | ресепшен, участники, `users.json`; `PUT` только участников |
 
-Порт 8001 слушает исключительно loopback. **Порт и есть пропуск**: снаружи
-на него ведёт единственная дорога — `location /admin/` в nginx под паролем.
-Заголовку («я прошёл авторизацию») доверять не пришлось бы: порт из
-интернета подделать нельзя, заголовок — можно.
+Оба непубличных порта слушают исключительно loopback. **Порт и есть
+пропуск**: снаружи на каждый ведёт единственная дорога — своя `location` в
+nginx под своим паролем. Заголовку («я прошёл авторизацию, я штаб») верить
+не пришлось: порт из интернета подделать нельзя, заголовок — можно, а цена
+ошибки здесь вся админка.
 
 `PUT` разрешён для четырёх имён: `landing.html`, `participants.json`,
 `users.json`, `integrations.json`. Всё остальное — 403. `server.mjs`,
@@ -134,16 +152,23 @@ nginx, и кириллица в них роняет его с `UnicodeDecodeErro
 `users.json` и карточки участников любому, а вход внутри панели клиентский —
 его обходят через инструменты разработчика.
 
+Два файла — по одному на панель:
+
 ```bash
-htpasswd -c /etc/nginx/camp.htpasswd admin     # спросит пароль дважды
-chmod 640 /etc/nginx/camp.htpasswd
-chown root:www-data /etc/nginx/camp.htpasswd
+apt install -y apache2-utils
+htpasswd -c /etc/nginx/camp-admin.htpasswd admin   # пароль штаба
+htpasswd -c /etc/nginx/camp-desk.htpasswd  desk    # пароль стойки, другой
+chmod 640 /etc/nginx/camp-admin.htpasswd /etc/nginx/camp-desk.htpasswd
+chown root:www-data /etc/nginx/camp-admin.htpasswd /etc/nginx/camp-desk.htpasswd
 nginx -t && systemctl reload nginx
 ```
 
-`htpasswd` из пакета `apache2-utils`; если его нет — `apt install -y
-apache2-utils`. Второго человека добавляют без `-c` (иначе файл
-перезапишется): `htpasswd /etc/nginx/camp.htpasswd desk`.
+Второго человека в тот же файл добавляют **без** `-c` — иначе файл
+перезапишется и первый потеряет доступ:
+
+```bash
+htpasswd /etc/nginx/camp-desk.htpasswd anna
+```
 
 Участники и учётки — с ноутбука, один раз, на пустой сервер:
 
@@ -170,19 +195,32 @@ for p in "" admin.html users.json participants.json signups.json integrations.js
 Панели закрыты паролем — без него ничего, включая данные:
 
 ```bash
-for p in admin/ reseption/ admin/users.json admin/participants.json; do printf "%-26s %s\n" "/$p" "$(curl -so /dev/null -w '%{http_code}' https://camp.offline-tambov.ru/$p)"; done
+for p in admin/ reseption/ admin/users.json reseption/participants.json; do printf "%-28s %s\n" "/$p" "$(curl -so /dev/null -w '%{http_code}' https://camp.offline-tambov.ru/$p)"; done
 ```
 
 Все четыре — `401`. Если хоть один `200`, гейт не работает: смотрите
-`auth_basic_user_file` и существование `/etc/nginx/camp.htpasswd`.
+`auth_basic_user_file` и существование обоих файлов `.htpasswd`.
 
-С паролем открывается:
+Пароли разделены — это главная проверка этого раздела. Паролем стойки штаб
+не открывается:
 
 ```bash
-curl -so /dev/null -w '%{http_code}\n' -u admin https://camp.offline-tambov.ru/admin/
+curl -so /dev/null -w 'стойкой в штаб: %{http_code} (ждём 401)\n' -u desk https://camp.offline-tambov.ru/admin/
 ```
 
-`200`. Порт панели не должен торчать в интернет напрямую:
+И даже со своим паролем стойка не достаёт до файлов штаба:
+
+```bash
+for p in admin.html landing.html integrations.json signups.json; do printf "  стойка -> %-20s %s (ждём 404)\n" "$p" "$(curl -so /dev/null -w '%{http_code}' -u desk https://camp.offline-tambov.ru/reseption/$p)"; done
+```
+
+Свои панели каждым паролем открываются:
+
+```bash
+printf 'штаб: %s   стойка: %s\n' "$(curl -so /dev/null -w '%{http_code}' -u admin https://camp.offline-tambov.ru/admin/)" "$(curl -so /dev/null -w '%{http_code}' -u desk https://camp.offline-tambov.ru/reseption/)"
+```
+
+Оба `200`. Порт панели не должен торчать в интернет напрямую:
 
 ```bash
 curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://camp.offline-tambov.ru:8001/admin.html || echo "порт 8001 снаружи закрыт — так и надо"
@@ -250,9 +288,10 @@ TG_TOKEN=… MAX_TOKEN=… CAMP_PORT=8000 node bots.mjs
   файла ещё нет; дальше git-версия остаётся образцом для нового лагеря.
   Поэтому история правок лендинга живёт в `backups/` на сервере, а не в
   коммитах.
-- **Ролей на уровне гейта.** Basic auth один на обе панели: кто открыл
-  `/reseption/`, тот может открыть и `/admin/`. Роли внутри панели
-  (`users.json`) остаются, но они второй слой, а не первый.
+- **Больше двух ролей на уровне гейта.** Их две: штаб и стойка. Если
+  понадобится третья (например «только смотреть»), это ещё один порт со
+  своим списком в `server.mjs` и ещё одна `location` — механизм тот же,
+  но руками. Роли внутри панели (`users.json`) остаются вторым слоем.
 - **Откатов через GitHub.** Сервер всегда выкладывает `origin/main`. Чтобы
   откатить код, нужен `git revert` и push. Сломанный код туда не попадёт —
   его отсекает selftest в `pull.sh`.

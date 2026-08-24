@@ -49,7 +49,12 @@ if ! node server.mjs --selftest >/tmp/camp-selftest.txt 2>&1; then
 fi
 
 # Код — из git. Панели тоже код: их правит человек, а не панель.
-install -m644 -o camp -g camp sw.js manifest.webmanifest server.mjs \
+#
+# .mjs берём маской, а не списком имён: server.mjs уже импортирует соседний
+# модуль, и следующий такой сосед иначе просто не доехал бы — сервер упал
+# бы на ERR_MODULE_NOT_FOUND. Список имён здесь был бы ровно тем видом
+# знания, которое устаревает молча.
+install -m644 -o camp -g camp *.mjs sw.js manifest.webmanifest \
                               admin.html reception.html "$APP/"
 
 # landing.html СЮДА НЕ ВХОДИТ намеренно. Его правит штаб прямо на сервере,
