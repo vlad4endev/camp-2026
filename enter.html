@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Вход · Офлайн Кемп</title>
+<style>
+/* Токены те же, что в штабе, на стойке и на лендинге: одна семья.
+   Шрифт системный намеренно — это первая страница, которую видит
+   человек, и ждать загрузки Manrope ради одного заголовка незачем. */
+:root{
+  --bg:#F3F6F4; --panel:#fff; --line:#E2EAE5; --line2:#D3DED7;
+  --ink:#0C1711; --mut:#5F7568; --acc:#2A6B3E; --acc2:#48B873;
+  --err:#E5533C; --tap:46px;
+  --dsp:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;
+  --ease:cubic-bezier(.22,.61,.36,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:15px/1.45 -apple-system,'Segoe UI',Roboto,system-ui,sans-serif;color:var(--ink);
+  display:grid;place-items:center;padding:22px;-webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;
+  background:linear-gradient(170deg,#0B1D13,#123021 60%,#0F2417)}
+button,input{font:inherit}
+button{border:1px solid transparent;border-radius:11px;background:var(--panel);color:var(--ink);
+  font-weight:650;cursor:pointer;transition:filter .12s var(--ease),transform .06s}
+button:hover:not(:disabled){filter:brightness(.96)}
+button:active:not(:disabled){transform:translateY(1px)}
+button:disabled{opacity:.42;cursor:not-allowed}
+:focus-visible{outline:3px solid var(--acc2);outline-offset:2px}
+
+.box{width:100%;max-width:370px;background:var(--panel);border-radius:20px;padding:26px 24px;
+  box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.mark{display:flex;align-items:center;gap:9px;color:var(--acc);margin-bottom:3px}
+.mark svg{width:17px;height:21px;flex-shrink:0}
+h1{font-family:var(--dsp);font-size:23px;font-weight:800;letter-spacing:-.035em}
+.eyebrow{font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--mut);margin-bottom:17px}
+.f{display:block;margin-bottom:11px}
+.f>span{display:block;font-size:10.5px;font-weight:750;color:var(--mut);margin-bottom:4px;
+  text-transform:uppercase;letter-spacing:.05em}
+.f input{width:100%;min-height:var(--tap);padding:10px 12px;font-size:15px;font-weight:600;
+  border:1.5px solid var(--line2);border-radius:11px;background:#fff;color:var(--ink)}
+.f input:focus{outline:0;border-color:var(--acc2)}
+.b-pri{width:100%;height:var(--tap);background:var(--acc2);color:#fff;font-size:15px;margin-top:4px}
+.msg{min-height:19px;font-size:12.5px;font-weight:650;color:var(--err);margin-top:9px}
+.msg.wait{color:var(--mut)}
+.lim{font-size:11.5px;color:var(--mut);line-height:1.6;margin-top:15px;padding-top:13px;
+  border-top:1px solid var(--line)}
+.lim code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  background:var(--bg);padding:1px 4px;border-radius:4px}
+</style>
+</head>
+<body>
+
+<div class="box">
+  <div class="mark">
+    <svg viewBox="0 0 18 22" fill="currentColor" aria-hidden="true"><path d="M9 0 3.5 9h2.9L1.2 18.6h6.7V22h2.2v-3.4h6.7L11.6 9h2.9z"/></svg>
+    <h1>Офлайн Кемп</h1>
+  </div>
+  <p class="eyebrow" id="place">Вход для организаторов</p>
+
+  <form id="f" novalidate>
+    <label class="f"><span id="lbl">Вход</span>
+      <input id="email" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+    <label class="f"><span>Пароль</span>
+      <input id="pass" type="password" autocomplete="current-password" required></label>
+    <button class="b-pri" type="submit" id="go">Войти</button>
+  </form>
+  <p class="msg" id="msg"></p>
+
+  <p class="lim" id="lim">Одна дверь на штаб и на стойку: куда пустить — решает
+    ваша роль в лагере, а не адрес, который вы открыли.</p>
+</div>
+
+<script src="camp-db.js"></script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const msg = (t, wait) => { const el = $('#msg'); el.textContent = t; el.classList.toggle('wait', !!wait); };
+
+/* Куда ведёт роль. Стойка — единственная роль, которой штаб не нужен:
+   её работа это заезд, комнаты и взносы, и отдельная страница делает её
+   быстрее. Всем остальным нужен штаб — расписание, мастер-классы,
+   тексты страницы, — поэтому развилка ровно одна, а не таблица. */
+const HOME = role => role === 'desk' ? 'reception.html' : 'admin.html';
+
+/* ── 1. ЧЕМ ЖИВЁТ ЭТОТ ЛАГЕРЬ ───────────────────────────────────────
+   Дверь не знает заранее, есть ли у лагеря единая база. Спрашивает у
+   сервера — он отвечает одним полем:
+
+     mode:'db'   — есть Supabase. Вход по e-mail, пароли держит она.
+     mode:'file' — базы нет (лагерь в поле, интернета нет вовсе).
+                   Вход по логину из users.json, пароль проверяет сервер.
+
+   Раньше адрес проекта и ключ anon вводили руками в каждом браузере —
+   лишняя работа на каждом новом устройстве и лишний способ ошибиться.
+   Теперь единственный источник — окружение сервера. */
+
+let MODE = 'file';
+
+async function setup(){
+  let cfg;
+  try {
+    const r = await fetch('dbconfig', { cache:'no-store' });
+    if (!r.ok) throw new Error('сервер не отдал настройки (' + r.status + ')');
+    cfg = await r.json();
+  } catch (err) {
+    /* Сервера нет вовсе — панель открыли файлом. Настройки базы могли
+       остаться в этом браузере с прошлого раза: это офлайн-запас. */
+    if (window.CampDB && CampDB.configured()){ MODE = 'db'; return; }
+    throw err;
+  }
+
+  if (cfg && cfg.mode === 'file'){ MODE = 'file'; return; }
+  if (!cfg || !cfg.url || !cfg.anon)
+    throw new Error('на сервере не заданы SUPABASE_URL и SUPABASE_ANON_KEY');
+  if (!window.CampDB) throw new Error('camp-db.js не загрузился');
+
+  /* Ключ service_role отличается от anon только полем role внутри JWT.
+     Смотрим в него: перепутать их в окружении сервера — значит выдать
+     каждому браузеру доступ в обход всех прав, и заметить это нечем.
+     Сервер проверяет это же и сам (anonOnly), но здесь ключ впервые
+     входит в браузер — а раньше проверку делала форма ввода, которой
+     больше нет. Два места нарочно: цена пропущенной ошибки — всё. */
+  let claims;
+  try { claims = JSON.parse(atob(String(cfg.anon).split('.')[1] || '')); }
+  catch (_) { throw new Error('ключ в настройках сервера не похож на ключ Supabase'); }
+  if (claims.role && claims.role !== 'anon')
+    throw new Error('сервер отдал ключ «' + claims.role + '», а нужен anon — service_role в браузер нельзя');
+
+  CampDB.configure({ url: cfg.url, anon: cfg.anon });
+  MODE = 'db';
+}
+
+/* Подпись поля меняется вместе с режимом: в лагере без базы у людей
+   логины («admin»), а не адреса почты, и просить e-mail значило бы
+   просить то, чего нет. */
+function dressForm(){
+  const db = MODE === 'db';
+  $('#lbl').textContent = db ? 'E-mail' : 'Логин';
+  const el = $('#email');
+  el.type = db ? 'email' : 'text';
+  el.autocapitalize = 'off';
+  $('#lim').textContent = db
+    ? 'Одна дверь на штаб и на стойку: куда пустить — решает ваша роль в лагере, а не адрес, который вы открыли.'
+    : 'Лагерь работает без интернета: список доступа лежит рядом с панелью, пароль проверяет сервер. Куда пустить — решает ваша роль.';
+}
+
+/* Место лагеря берём из лендинга — той же строкой, что и панели.
+   Не критично: не вышло — остаётся подпись по умолчанию. */
+async function place(){
+  try {
+    const r = await fetch('landing.html', { cache:'no-store' });
+    if (!r.ok) return;
+    const m = (await r.text()).match(/\n\s*place:'([^'\n]{1,60})'/);
+    if (m) $('#place').textContent = m[1].replace(/,\s*/g, ' · ');
+  } catch (_) {}
+}
+
+/* ── 2. СЕССИЯ НА СЕРВЕРЕ ──────────────────────────────────────────
+   Токен Supabase живёт в sessionStorage вкладки, и обычная навигация
+   на admin.html его с собой не несёт — заголовок к переходу по ссылке
+   не приложишь. Поэтому отдаём токен серверу один раз: он проверяет
+   его, узнаёт роль и ставит свою куку. Дальше решение «пускать или
+   нет» принимает сервер, а не страница, — и файлы штаба не уедут в
+   браузер человека, которому они не положены.
+
+   Пока маршрута нет (сервер ещё за Basic auth в nginx), молча идём
+   дальше: вход и роль уже работают, куку добавит следующий шаг. */
+const SAY = {
+  bad_login: 'Логин или пароль не подходят',
+  not_staff: 'Вход есть, но роль в лагере не выдана — попросите «Главного» добавить вас',
+  no_secret: 'На сервере нет ключей — вход выдавать нечем',
+  no_db:     'Сервер не подключён к базе',
+};
+
+/* Отдаём серверу то, чем подтверждается вход: токен Supabase или логин с
+   паролем. Возвращает роль — по ней и решаем, куда идти. */
+async function session(payload){
+  let r;
+  try {
+    r = await fetch('session', {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (_) { throw new Error('сервер не отвечает'); }
+
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(SAY[d.error] || d.error || ('сервер не принял вход (' + r.status + ')'));
+  return d.role;
+}
+
+function leave(role){
+  msg('');
+  location.replace(HOME(role));
+}
+
+/* ── 3. ВХОД ───────────────────────────────────────────────────────*/
+
+let busy = false;
+$('#f').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (busy) return;
+  const email = $('#email').value.trim(), pass = $('#pass').value;
+  if (!email || !pass) return msg('Заполните e-mail и пароль');
+
+  busy = true; $('#go').disabled = true; msg('Проверяем…', true);
+  try {
+    if (MODE === 'db') {
+      /* Пароль уходит в Supabase, не на наш сервер: он его и не видит. */
+      const s = await CampDB.signIn(email, pass);
+      await session({ access: s.access });
+      leave(s.role);
+    } else {
+      /* Пароль проверяет сервер по users.json — в браузере он не
+         сверяется вовсе, а файл с хэшами наружу не отдаётся. */
+      leave(await session({ login: email, pass }));
+    }
+  } catch (err) {
+    $('#pass').value = '';
+    msg(err.message);
+  } finally { busy = false; $('#go').disabled = false; }
+});
+
+/* ── 4. ЗАГРУЗКА ───────────────────────────────────────────────────*/
+
+(async () => {
+  place();
+  try { await setup(); }
+  catch (err) { msg(err.message); $('#go').disabled = true; return; }
+  dressForm();
+
+  /* Уже вошли — не показываем форму второй раз. Спрашиваем у сервера:
+     куку он поставил HttpOnly, и скрипт её не видит. Без этого шага
+     выходила бы петля — панель не видит входа и отправляет сюда, а
+     здесь ничего не помнят и отправляют обратно. */
+  try {
+    const r = await fetch('whoami', { cache:'no-store' });
+    if (r.ok) {
+      const me = await r.json();
+      if (me && me.role) return leave(me.role);
+    }
+  } catch (_) {}
+
+  /* С базой роль перепрашиваем у неё, а не берём из sessionStorage: её
+     могли отозвать, пока вкладка была открыта. */
+  const s = MODE === 'db' && window.CampDB && CampDB.session();
+  if (s && s.access) {
+    let me = null;
+    try { me = await CampDB.staffMe(); } catch (_) {}
+    if (me) { await session({ access: s.access }).catch(() => {}); return leave(me.role); }
+    CampDB.signOut();
+  }
+  /* Почему выкинуло назад, если панель отправила сюда сама. */
+  try {
+    const w = sessionStorage.getItem('camp-admin-why');
+    sessionStorage.removeItem('camp-admin-why');
+    if (w) msg(w);
+  } catch (_) {}
+  $('#email').focus();
+})();
+</script>
+</body>
+</html>

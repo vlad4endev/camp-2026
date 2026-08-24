@@ -227,7 +227,6 @@ button:disabled{opacity:.42;cursor:not-allowed}
 
 <div id="toasts"></div>
 <input type="file" id="pFile" accept=".json,application/json" hidden>
-<input type="file" id="uFile" accept=".json,application/json" hidden>
 
 <script>
 /* ═══════════════════════════════════════════════════════════════
@@ -370,7 +369,7 @@ function visible(people, q, filter){
 <script>
 /* ═══════════ ФАЙЛ ═══════════════════════════════════════════ */
 
-const P = { people:null, users:[], me:null, h:null, rw:false, raw:'',
+const P = { people:null, me:null, h:null, rw:false, raw:'',
             q:'', filter:'wait', sel:null, busy:false, db:false };
 
 /* Работаем через базу, если она настроена и вход выполнен. Иначе всё
@@ -402,7 +401,12 @@ const idb = {
    Двадцать строк дублируются с admin.html намеренно: обе панели —
    самостоятельные файлы без сборки, и общий .js стоил бы лишнего запроса
    там, где важнее, чтобы страница открывалась одна и целиком. */
-const ONSRV = !['localhost', '127.0.0.1', '[::1]', ''].includes(location.hostname);
+/* По протоколу, а не по имени хоста: страницу отдали по http(s) — значит
+   сервер рядом и запись идёт через него, с проверкой роли по куке. На
+   ноутбуке это убирает выбор папки руками, за которым не стояло никакой
+   границы. file:// (открыли двойным щелчком) — по-прежнему через
+   File System Access API. Подробный разбор — в admin.html. */
+const ONSRV = /^https?:$/.test(location.protocol);
 
 function srvFile(name){
   return { kind:'file', name,
@@ -747,7 +751,13 @@ const ACT = {
   filter: b => { P.filter = b.dataset.v; render(); },
   grant: async () => { if(await attach(true)){ await pull(); render(); toast('Запись включена'); }
                        else openFile(); },
-  out: () => { try{ sessionStorage.removeItem(WHO); }catch(_){} location.reload(); },
+  /* Куку гасит сервер: она HttpOnly, скрипт её не видит. Не дождались
+     ответа — уходим всё равно, токен уже выброшен. */
+  out: async () => {
+    try{ CampDB.signOut(); }catch(_){}
+    try{ await fetch('signout', { method:'POST' }); }catch(_){}
+    door();
+  },
 
   tick: b => { const id = b.dataset.id;
     commit(id, p => setArrived(p, p.status !== 'arrived'),
@@ -846,138 +856,40 @@ addEventListener('keydown', e => {
 
 <script>
 /* ═══════════ ВХОД ═══════════════════════════════════════════
-   Тот же users.json и тот же PBKDF2, что в штабе: два списка людей
-   с правами — это два списка, которые однажды разойдутся.
-   За стойку пускаем роли, у которых в штабе есть раздел «Участники». */
+   Своей формы входа у стойки нет — и это главное, что изменилось.
+   Вход один на весь лагерь: enter.html. Он спрашивает e-mail и пароль,
+   узнаёт роль в таблице staff и приводит человека уже сюда.
+
+   Пока формы стояли в обеих панелях, их было две, и каждая могла
+   подключить браузер к своему проекту Supabase. Два места, задающих
+   «какая у нас база», — это два разных ответа на вопрос, с чьими
+   данными вы работаете. Плюс каждое новое устройство просило ввести
+   адрес проекта и ключ руками.
+
+   За стойку пускаем роли, у которых в штабе есть раздел «Участники»:
+   принимать деньги и селить — это они. Редактору здесь делать нечего,
+   поэтому его уводим в штаб, а не показываем пустую стойку. */
 
 const DESK_ROLES = ['admin','lead','desk'];
 const ROLE_NAME = { admin:'Главный', lead:'Вожатый', desk:'Регистратура', content:'Редактор' };
-const ITER = 120000;
-const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,'0')).join('');
-const loginClean = s => String(s||'').trim().toLowerCase()
-  .replace(/[^a-z0-9._-]/g,'').replace(/^[._-]+/,'').slice(0,32);
 
-async function hashPass(pass, salt){
-  if(!crypto.subtle) throw new Error(
-    'Браузер не даёт криптографию на этом адресе. Откройте так: http://localhost:8000/reception.html');
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveBits']);
-  return hex(await crypto.subtle.deriveBits(
-    { name:'PBKDF2', hash:'SHA-256', salt:new TextEncoder().encode(salt), iterations:ITER }, key, 256));
-}
-const findUser = login => P.users.find(u => u.login === String(login).toLowerCase());
-async function verify(u, pass){
-  if(!u || u.off || !u.salt || !u.hash) return false;
-  return await hashPass(pass, u.salt) === u.hash;
-}
-function setUsers(text){
-  const arr = JSON.parse(String(text).trim() || '[]');
-  if(!Array.isArray(arr)) throw new Error('Ожидался JSON-массив пользователей — это другой файл');
-  P.users = arr.filter(x => x && x.login).map(x => ({
-    login: loginClean(x.login), name: String(x.name || x.login), role: String(x.role || 'desk'),
-    salt: String(x.salt || ''), hash: String(x.hash || ''), off: !!x.off }));
-}
-async function loadUsers(){
-  if(!/^https?:$/.test(location.protocol)) return;
-  try{
-    const r = await fetch('users.json', { cache:'no-store' });
-    if(r.ok) setUsers(await r.text());
-  }catch(_){}
-}
+const door = why => {
+  if(why) try{ sessionStorage.setItem('camp-admin-why', why); }catch(_){}
+  /* replace, а не href: «назад» не должно возвращать на запертую стойку. */
+  location.replace('enter.html');
+};
 
-const WHO = 'camp-admin-who';                    // тот же ключ, что в штабе
-const PINE = `<svg viewBox="0 0 18 22" fill="currentColor"><path d="M9 0 3.5 9h2.9L1.2 18.6h6.7V22h2.2v-3.4h6.7L11.6 9h2.9z"/></svg>`;
-const gateBox = html => { $('#gate').innerHTML = `<div class="gbox">
-  <div class="mark">${PINE}<h1>Ресепшн</h1></div>
-  <p class="eyebrow">Стойка регистрации лагеря</p>${html}
-  <p class="lim">Страница и личные данные в лагерную Wi-Fi не уходят — их видно
-  только с этого ноутбука. Вход закрывает стойку от посторонних рук.</p></div>`; };
-const gateErr = m => { const el = $('#gate .msg'); if(el) el.textContent = m; };
-
-function showGate(){
-  /* С базой вход — Supabase Auth: e-mail и пароль, без users.json.
-     Хэши PBKDF2 из старого файла сюда не переезжают, и это правильно:
-     пароли не должны лежать в папке лагеря. */
-  if(window.CampDB && CampDB.configured()){
-    gateBox(`
-      <label class="f"><span>E-mail</span><input id="gLogin" type="email" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
-      <label class="f"><span>Пароль</span><input id="gPass" type="password" autocomplete="current-password"></label>
-      <button class="b-pri" data-gact="dblogin">Войти</button>
-      <div class="msg"></div>
-      <p class="lim" style="margin-top:10px">Вход общий со штабом. Пароль меняется
-      в Supabase, а не здесь.</p>`);
-    const l = $('#gLogin'); if(l) l.focus();
-    return;
-  }
-  if(!P.users.length) return gateBox(`
-    <p style="font-size:13px;line-height:1.65;color:var(--mut)">Список доступа
-    <code>users.json</code> пока пуст или не читается. Заведите первого
-    пользователя в штабе — стойка берёт тот же файл.</p>
-    <a class="b-pri" href="admin.html" style="display:grid;place-items:center;text-decoration:none;margin-top:14px">Открыть штаб</a>
-    <div class="msg"></div>
-    <button class="chip" data-gact="openusers" style="width:100%;margin-top:9px;min-height:42px">Открыть users.json вручную</button>`);
-  gateBox(`
-    <label class="f"><span>Логин</span><input id="gLogin" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
-    <label class="f"><span>Пароль</span><input id="gPass" type="password" autocomplete="current-password"></label>
-    <button class="b-pri" data-gact="login">Войти</button>
-    <div class="msg"></div>`);
-  const l = $('#gLogin'); if(l) l.focus();
-}
-/* Вход через базу. Роль приходит из таблицы staff, а не из формы:
-   ключ anon одинаковый у всех, права даёт только строка в staff. */
-async function doDbLogin(){
-  const email = String($('#gLogin').value || '').trim();
-  const pass  = $('#gPass').value;
-  if(!email || !pass) return gateErr('Заполните e-mail и пароль');
-  gateErr('Проверяем…');
-  let s;
-  try{ s = await CampDB.signIn(email, pass); }
-  catch(err){ $('#gPass').value = ''; return gateErr(err.message); }
-  if(!DESK_ROLES.includes(s.role)){
-    CampDB.signOut();
-    return gateErr(`Роль «${ROLE_NAME[s.role] || s.role}» не работает со списком участников`);
-  }
-  P.db = true;
-  signIn({ login: s.email, name: s.name || s.email, role: s.role });
-}
-
-async function doLogin(){
-  const login = loginClean($('#gLogin').value), pass = $('#gPass').value;
-  if(!login || !pass) return gateErr('Заполните логин и пароль');
-  let ok = false;
-  try{ ok = await verify(findUser(login), pass); }catch(err){ return gateErr(err.message); }
-  if(!ok){ $('#gPass').value = ''; return gateErr('Логин или пароль не подходят'); }
-  const u = findUser(login);
-  if(!DESK_ROLES.includes(u.role))
-    return gateErr(`Роль «${ROLE_NAME[u.role] || u.role}» не работает со списком участников`);
-  signIn(u);
-}
 function signIn(u){
   P.me = u;
-  try{ sessionStorage.setItem(WHO, u.login); }catch(_){}
   $('#gate').hidden = true;
   document.body.classList.remove('locked');
   $('#me').textContent = u.name + ' · ' + (ROLE_NAME[u.role] || u.role);
   start();
 }
 
-$('#gate').addEventListener('click', e => {
-  const b = e.target.closest('[data-gact]');
-  if(!b) return;
-  e.preventDefault();
-  if(b.dataset.gact === 'login') doLogin();
-  if(b.dataset.gact === 'dblogin') doDbLogin();
-  if(b.dataset.gact === 'openusers') $('#uFile').click();
-});
-$('#gate').addEventListener('keydown', e => {
-  if(e.key !== 'Enter') return;
-  if($('#gate [data-gact=login]'))   { e.preventDefault(); doLogin(); }
-  if($('#gate [data-gact=dblogin]')) { e.preventDefault(); doDbLogin(); }
-});
-$('#uFile').addEventListener('change', async e => {
-  const f = e.target.files[0]; e.target.value = '';
-  if(!f) return;
-  try{ setUsers(await f.text()); showGate(); }catch(err){ gateErr(err.message); }
-});
+/* Обработчиков у заслонки нет: нажимать на ней нечего. Она только
+   показывает «Проверяем, кто открыл ресепшн…», пока boot() не решит —
+   пустить, увести в штаб или увести на дверь. */
 </script>
 
 <script>
@@ -1003,31 +915,44 @@ async function start(){
   watch();
 }
 
+/* Кто вошёл — по мнению сервера. Для лагеря БЕЗ базы: вход подтверждает
+   кука, а она HttpOnly и скрипту не видна. */
+async function serverWho(){
+  try{
+    const r = await fetch('whoami', { cache:'no-store' });
+    if(!r.ok) return null;
+    const me = await r.json();
+    return me && me.role ? me : null;
+  }catch(_){ return null }
+}
+
 async function boot(){
-  /* База настроена — она и есть источник и списка, и прав. users.json
-     в этом режиме не читаем вовсе: два списка доступа означали бы два
-     разных ответа на вопрос «кто может принимать деньги». */
-  if(window.CampDB && CampDB.configured()){
-    const s = CampDB.session();
-    if(s && s.access){
-      /* Роль перепроверяем у базы, а не берём из sessionStorage: её
-         могли отозвать, пока вкладка была открыта. */
-      let me = null;
-      try{ me = await CampDB.staffMe(); }catch(_){}
-      if(me && DESK_ROLES.includes(me.role)){
-        P.db = true;
-        return signIn({ login: s.email, name: me.name || s.email, role: me.role });
-      }
-      CampDB.signOut();
-    }
-    return showGate();
+  /* База — единственный источник и списка участников, и прав. Роль
+     перепроверяем у неё, а не берём из сессии вкладки: её могли
+     отозвать, пока стойка стояла открытой. */
+  if(!(window.CampDB && CampDB.configured())){
+    const me = await serverWho();
+    if(!me) return door();
+    if(!DESK_ROLES.includes(me.role)) return location.replace('admin.html');
+    return signIn({ login: me.login || me.name, name: me.name || me.login, role: me.role });
   }
-  await loadUsers();
-  let who = null;
-  try{ who = sessionStorage.getItem(WHO); }catch(_){}
-  const u = who && findUser(who);
-  if(u && !u.off && DESK_ROLES.includes(u.role)) return signIn(u);   // права перечитаны из файла
-  showGate();
+
+  const s = CampDB.session();
+  if(!s || !s.access) return door();            // не вошёл — на дверь
+
+  let me = null;
+  try{ me = await CampDB.staffMe(); }catch(_){}
+  if(!me){
+    CampDB.signOut();
+    return door('Вход есть, но роль в лагере не выдана — попросите «Главного» добавить вас.');
+  }
+  /* Роль не про участников (редактор) — уводим в штаб, где его работа.
+     Раньше здесь была ошибка на экране входа: человек читал, что его
+     роль «не работает со списком участников», и оставался стоять. */
+  if(!DESK_ROLES.includes(me.role)) return location.replace('admin.html');
+
+  P.db = true;
+  signIn({ login: s.email, name: me.name || s.email, role: me.role });
 }
 
 if(location.hash !== '#selftest') boot();

@@ -143,12 +143,18 @@ if (integ) { await upsert('integrations', { id: 1, doc: integ }); say('✓ то�
 /* Пароли не переезжают — печатаем список, кого создать руками. */
 if (Array.isArray(users) && users.length){
   say('\nОсталось вручную: создать этих людей в Supabase Auth');
-  say('(Authentication → Users → Add user), а потом выдать роль:\n');
-  for (const u of users)
-    say(`  insert into staff (user_id, name, role) values ` +
-        `('<uuid из Auth>', '${String(u.name || u.login).replace(/'/g, "''")}', ` +
+  say('(Authentication → Users → Add user), а потом выдать роль.');
+  say('Первым заводите admin: без активного главного база не даст');
+  say('добавить остальных, а управлять доступом может только он.\n');
+  const byRole = [...users].sort((a, b) =>
+    (a.role === 'admin' ? 0 : 1) - (b.role === 'admin' ? 0 : 1));
+  for (const u of byRole)
+    say(`  insert into staff (user_id, email, name, role) values ` +
+        `('<uuid из Auth>', '<e-mail>', ` +
+        `'${String(u.name || u.login).replace(/'/g, "''")}', ` +
         `'${['admin','lead','desk','content'].includes(u.role) ? u.role : 'lead'}');`);
   say('\nПароли из users.json не переносятся: их хэши Supabase Auth не примет.');
+  say('Дальше остальных добавляет сам штаб — раздел «Пользователи».');
 }
 
 say('\nГотово.');

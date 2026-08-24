@@ -152,8 +152,15 @@ const del    = (t, q) => rest(t + '?' + q, { method:'DELETE', prefer:'return=min
    не в базе» — панель обязана это показать, а не делать вид, что всё
    сохранено. */
 
+/* Путь БЕЗ ведущего слэша, и это важно. С ним '/queue' — всегда корень
+   домена, а корень уходит на публичный порт, где этого маршрута нет
+   вовсе: панель на /admin/ получала 404, то есть офлайн-досылка на
+   домене не работала совсем. Относительный путь идёт по тому же
+   префиксу, откуда открыта панель (/admin/queue → 8001,
+   /reseption/queue → 8002), а на ноутбуке даёт тот же /queue.
+   Абсолютный путь этого не умеет принципиально: он один, а портов два. */
 async function viaServer(op){
-  const r = await fetch('/queue', {
+  const r = await fetch('queue', {
     method:'POST', headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify(op),
   });
@@ -188,7 +195,19 @@ async function staffMe(){
   const me = rows && rows[0];
   return me && !me.off ? me : null;
 }
-const staff = () => select('staff', 'select=user_id,name,role,off&order=name');
+const staff = () => select('staff', 'select=user_id,email,name,role,off&order=name');
+
+/* Список доступа правит только главный — это и есть политика staff_write.
+   Пароли здесь не при чём: их держит Supabase Auth, и панель к ним не
+   прикасается вовсе. Завести человека можно только в Supabase
+   (Authentication → Users): «стать главным самому себе» из панели на
+   публичном адресе было бы захватом штаба тем, кто открыл его первым.
+
+   Последнего активного admin база не даст ни разжаловать, ни отключить,
+   ни удалить — за этим следит триггер staff_keep_admin. Кнопку в
+   интерфейсе обошёл бы запрос мимо панели, триггер — нет. */
+const saveStaff = rows => upsert('staff', rows);
+const delStaff  = uid => del('staff', 'user_id=eq.' + encodeURIComponent(uid));
 
 /* ── 6. УЧАСТНИКИ ─────────────────────────────────────────────────
    Наружу отдаём ту же форму, что лежала в participants.json: массив
@@ -351,7 +370,7 @@ const saveIntegrations = doc => upsert('integrations', { id:1, doc });
 
 async function serverStatus(){
   try {
-    const r = await fetch('/dbstatus', { cache:'no-store' });
+    const r = await fetch('dbstatus', { cache:'no-store' });   // без слэша — см. viaServer()
     return r.ok ? await r.json() : null;
   } catch (_) { return null }
 }
@@ -359,7 +378,7 @@ async function serverStatus(){
 global.CampDB = {
   configure, configured, forget, config: () => ({ ...cfg }),
   signIn, signOut, session, isOnline, serverStatus,
-  staff, staffMe,
+  staff, staffMe, saveStaff, delStaff,
   people, savePerson, addPayment, delPayment, delPerson,
   diffPerson, pushPerson,
   signups, seats, claimSeat,

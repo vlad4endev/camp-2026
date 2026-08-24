@@ -55,8 +55,12 @@ fi
 # сосед по списку имён просто не доехал бы — сервер упал бы на
 # ERR_MODULE_NOT_FOUND, а панель на 404 своего же скрипта. Список имён был
 # ровно тем видом знания, которое устаревает молча.
+# HTML остаётся списком имён, а не маской: рядом лежат landing.backup.html
+# и landing.v1-selling.html — старые копии, которым на сервере делать
+# нечего, а landing.html не код (см. ниже). Добавляете страницу — вписывайте
+# сюда, иначе она молча не доедет.
 install -m644 -o camp -g camp *.mjs *.js manifest.webmanifest \
-                              admin.html reception.html "$APP/"
+                              enter.html admin.html reception.html "$APP/"
 
 # landing.html СЮДА НЕ ВХОДИТ намеренно. Его правит штаб прямо на сервере,
 # значит это уже не код, а живое состояние — как участники и записи. Ставим
@@ -65,14 +69,15 @@ install -m644 -o camp -g camp *.mjs *.js manifest.webmanifest \
 [ -f "$APP/landing.html" ] || install -m644 -o camp -g camp landing.html "$APP/"
 
 # Пустой список участников при первом запуске: тогда /me и панель отвечают
-# осмысленно с самого начала, а не «файла нет». users.json здесь НЕ создаём:
-# пустой файл сломал бы разбор, а отсутствие панель понимает и прямо
-# говорит, что вход не настроен. Первого пользователя заводит
-# deploy/mkuser.mjs — сама панель этого намеренно не умеет.
+# осмысленно с самого начала, а не «файла нет».
+#
+# Доступ здесь не заводится вообще: пароли держит Supabase Auth, роли —
+# таблица staff. Файла с хэшами рядом с панелью больше нет, и заводить его
+# нечем (deploy/mkuser.mjs удалён вместе с ним).
 if [ ! -f "$APP/participants.json" ]; then
   echo '[]' > "$APP/participants.json"
   chown camp:camp "$APP/participants.json"
-  log "создан пустой participants.json — заведите доступ: deploy/mkuser.mjs admin"
+  log "создан пустой participants.json — доступ заводится в Supabase: аккаунт + строка в staff"
 fi
 # --delete внутри icons/ и deploy/ безопасен: это папки только с кодом,
 # живых данных в них нет. В корне $APP --delete не применяется никогда.

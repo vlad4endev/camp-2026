@@ -254,7 +254,11 @@ export async function signup(rec){
   try {
     const r = await rpc('claim_seat', args);
     state = { online:true, at: Date.now(), err:'' };
-    if (r && r.ok) await pull();                    // зеркало сразу актуально
+    /* Обновляем зеркало сразу — но только если досылать больше нечего:
+       иначе pull() затёр бы чужую оптимистичную правку, которая ещё
+       лежит в очереди. С непустой очередью зеркало подтянет цикл, уже
+       после flush(). */
+    if (r && r.ok && !readOutbox().length) await pull();
     return r;
   } catch (err) {
     state = { ...state, online:false, err: err.message };
@@ -281,7 +285,7 @@ export async function savePerson(id, fields){
   try {
     await upsert('participants', { id, ...toRow(fields) });
     state = { online:true, at: Date.now(), err:'' };
-    await pull();
+    if (!readOutbox().length) await pull();
     return { ok:true };
   } catch (err) {
     state = { ...state, online:false, err: err.message };
@@ -297,7 +301,7 @@ export async function addPayment(id, pay){
     await upsert('payments', { id: pay_id, participant_id: id, at: pay.at || '',
                                sum: pay.sum, note: pay.note || '' });
     state = { online:true, at: Date.now(), err:'' };
-    await pull();
+    if (!readOutbox().length) await pull();
     return { ok:true, id: pay_id };
   } catch (err) {
     state = { ...state, online:false, err: err.message };
@@ -313,7 +317,7 @@ export async function delPayment(id, pay_id){
   try {
     await remove('payments', 'id=eq.' + encodeURIComponent(pay_id));
     state = { online:true, at: Date.now(), err:'' };
-    await pull();
+    if (!readOutbox().length) await pull();
     return { ok:true };
   } catch (err) {
     state = { ...state, online:false, err: err.message };
@@ -346,14 +350,15 @@ export function start({ every = 15000, log = console.log } = {}){
     return () => {};
   }
   let stopped = false, timer;
+  /* Сначала досылаем, потом читаем. Наоборот нельзя: pull() перезаписывает
+     зеркало состоянием базы, и неотправленная запись на такт исчезла бы
+     с экрана телефона, чтобы через 15 секунд появиться снова. */
   const tick = async () => {
     if (stopped) return;
-    const ok = await pull();
-    if (ok){
-      const r = await flush(log);
-      if (r.sent)   log(`очередь: отправлено — ${r.sent}`);
-      if (r.failed) log(`очередь: отклонено базой — ${r.failed}`);
-    }
+    const r = await flush(log);
+    if (r.sent)   log(`очередь: отправлено — ${r.sent}`);
+    if (r.failed) log(`очередь: отклонено базой — ${r.failed}`);
+    await pull();
     timer = setTimeout(tick, every);
   };
   tick();

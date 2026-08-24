@@ -1,0 +1,22 @@
+# Прогоняет selftest server.mjs на каждый push. Сервер тянет код сам
+# (deploy/pull.sh), и перед выкладкой прогоняет selftest ещё раз у себя —
+# так что этот прогон не гейт, а быстрая обратная связь: увидеть красный
+# крест в GitHub раньше, чем сервер молча откажется обновляться.
+name: selftest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 20.11+ обязателен: server.mjs использует import.meta.dirname
+          node-version: '22'
+      - run: node server.mjs --selftest
+      - run: bash -n deploy/publish.sh deploy/pull.sh

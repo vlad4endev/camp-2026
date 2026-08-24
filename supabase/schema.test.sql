@@ -190,9 +190,49 @@ insert into auth.users (id, email) values
   ('11111111-1111-1111-1111-111111111111', 'glavny@camp'),
   ('22222222-2222-2222-2222-222222222222', 'redaktor@camp'),
   ('33333333-3333-3333-3333-333333333333', 'nikto@camp');
-insert into staff (user_id, name, role) values
-  ('11111111-1111-1111-1111-111111111111', 'Главный',  'admin'),
-  ('22222222-2222-2222-2222-222222222222', 'Редактор', 'content');
+insert into staff (user_id, email, name, role) values
+  ('11111111-1111-1111-1111-111111111111', 'glavny@camp',   'Главный',  'admin'),
+  ('22222222-2222-2222-2222-222222222222', 'redaktor@camp', 'Редактор', 'content');
+
+/* ── лагерь не остаётся без главного ──
+   Это единственная блокировка панели, из которой нет выхода изнутри:
+   без активного admin никто не сможет выдать роль обратно. Проверяем в
+   базе, потому что кнопку в интерфейсе можно обойти запросом. */
+/* set constraints immediate обязателен: триггер отложенный, то есть по
+   умолчанию срабатывает на commit — а внутри блока с exception коммита
+   нет, и проверка бы просто не запустилась. Ровно так этот тест сначала
+   и «прошёл», ничего не проверив. */
+do $$ begin
+  update staff set role = 'lead' where role = 'admin';
+  set constraints all immediate;
+  raise exception 'последнего главного разжаловали — триггер не работает';
+exception
+  when others then
+    if sqlerrm not like '%без активного%' then raise; end if;
+end $$;
+select ok('последнего главного нельзя разжаловать',
+  (select role from staff where user_id = '11111111-1111-1111-1111-111111111111') = 'admin');
+
+do $$ begin
+  update staff set off = true where role = 'admin';
+  set constraints all immediate;
+  raise exception 'последнего главного отключили — триггер не работает';
+exception
+  when others then
+    if sqlerrm not like '%без активного%' then raise; end if;
+end $$;
+select ok('последнего главного нельзя отключить',
+  not (select off from staff where user_id = '11111111-1111-1111-1111-111111111111'));
+
+-- А вот «назначил второго и разжаловал себя» пройти обязано: именно
+-- поэтому триггер отложенный, а не построчный.
+insert into staff (user_id, email, name, role) values
+  ('33333333-3333-3333-3333-333333333333', 'nikto@camp', 'Второй', 'admin');
+update staff set role = 'lead' where user_id = '11111111-1111-1111-1111-111111111111';
+select ok('передать роль главного другому можно',
+  (select count(*) from staff where role = 'admin' and not off) = 1);
+delete from staff where user_id = '33333333-3333-3333-3333-333333333333';
+update staff set role = 'admin' where user_id = '11111111-1111-1111-1111-111111111111';
 
 grant select, insert, update, delete on all tables in schema public to authenticated;
 

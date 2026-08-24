@@ -19,8 +19,23 @@ RestartSec=2
 
 # CAMP_PUBLIC=1 — единственное, что отделяет домен от ноутбука.
 # Без него сервер сочтёт каждый запрос из-за nginx запросом организатора
-# и отдаст в интернет админку, users.json и участников.
+# и отдаст в интернет админку и участников.
 Environment=CAMP_PUBLIC=1
+
+# Ключи Supabase — отдельным файлом, не здесь: этот юнит лежит в git.
+#
+#   sudo install -m600 -o root -g root /dev/null /etc/camp.env
+#   sudo tee /etc/camp.env >/dev/null <<'EOF'
+#   SUPABASE_URL=https://xxxx.supabase.co
+#   SUPABASE_ANON_KEY=eyJhbGci…
+#   SUPABASE_SERVICE_KEY=eyJhbGci…
+#   EOF
+#
+# ANON_KEY нужен серверу для двух дел: отдать его панелям на GET /dbconfig
+# (вводить руками больше не надо) и проверять им токен входа у Supabase.
+# SERVICE_KEY — это ещё и секрет подписи куки входа (см. auth.mjs).
+# Без этих трёх строк вход не выдаётся никому: панели останутся закрытыми.
+EnvironmentFile=/etc/camp.env
 
 # Сервер пишет только signups.json и backups/ в своей папке — больше
 # ничего в системе ему не нужно.
@@ -29,9 +44,20 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/srv/camp
-# Слушает только loopback (наружу смотрит nginx), внешняя сеть не нужна
-IPAddressAllow=localhost
-IPAddressDeny=any
+
+# ВХОДЯЩИЕ соединения по-прежнему только с loopback: наружу смотрит nginx,
+# и порт 8000 в интернете не торчит (это же продублировано в server.mjs).
+#
+# А вот ИСХОДЯЩИЕ пришлось открыть, и раньше здесь стоял IPAddressDeny=any
+# с подписью «внешняя сеть не нужна». С единой базой это перестало быть
+# правдой: сервер сам ходит в Supabase — тянет зеркало, досылает очередь
+# и проверяет токен входа. С прежним правилом всё это молча не работало
+# бы: соединение отсекается на уровне cgroup, то есть выглядит как
+# «база не ответила», а не как запрет.
+#
+# Если базы нет и лагерь живёт на файлах — верните две строки обратно:
+#   IPAddressAllow=localhost
+#   IPAddressDeny=any
 
 [Install]
 WantedBy=multi-user.target

@@ -24,14 +24,49 @@ create extension if not exists pgcrypto;      -- gen_random_uuid()
 -- организатор создан в Auth — самозапись запрещена, иначе любой, кто
 -- зарегистрировался, стал бы вожатым.
 
+-- email дублирует auth.users намеренно: политики не дают клиенту читать
+-- схему auth, а штаб должен видеть, кто есть кто. Без него список
+-- доступа выглядел бы как набор uuid.
 create table if not exists staff (
   user_id    uuid primary key references auth.users(id) on delete cascade,
+  email      text not null default '',
   name       text not null default '',
   role       text not null default 'lead'
              check (role in ('admin','lead','desk','content')),
   off        boolean not null default false,
   created_at timestamptz not null default now()
 );
+alter table staff add column if not exists email text not null default '';
+
+/* Лагерь не должен остаться без «главного»: без активного admin никто
+   больше не сможет ни выдать роль, ни забрать — политика staff_write
+   требует именно эту роль. Это блокировка панели, из которой нет выхода
+   изнутри.
+
+   Проверка стоит в базе, а не только в интерфейсе: запрос мимо панели
+   обошёл бы кнопку, но не триггер. Отложенный (deferred) — потому что
+   проверять надо итог транзакции: «сделали второго главным, себя
+   разжаловали» должно проходить, а построчная проверка спорила бы с
+   порядком строк внутри одного запроса.
+
+   Пустая таблица разрешена: это состояние «доступ ещё не настроен».
+   А вот первую строку придётся заводить с ролью admin — иначе получился
+   бы штаб, которым никто не управляет. */
+create or replace function staff_keep_admin() returns trigger
+language plpgsql as $$
+begin
+  if exists (select 1 from staff)
+     and not exists (select 1 from staff where role = 'admin' and not off) then
+    raise exception 'нельзя оставить лагерь без активного «главного»';
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists staff_keep_admin_trg on staff;
+create constraint trigger staff_keep_admin_trg
+  after insert or update or delete on staff
+  deferrable initially deferred
+  for each row execute function staff_keep_admin();
 
 -- security definer: политика должна читать staff, не спрашивая политик
 -- staff — иначе рекурсия. stable + пустой search_path против подмены.
