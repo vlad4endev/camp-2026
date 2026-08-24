@@ -252,6 +252,63 @@ const delPayment = (id, payId) =>
 
 const delPerson = id => del('participants', 'id=eq.' + encodeURIComponent(id));
 
+/* ── ЧТО ИМЕННО ИЗМЕНИЛОСЬ ────────────────────────────────────────
+   Файловые панели писали список целиком — там иначе было нельзя. В базу
+   так писать НЕЛЬЗЯ: пока экран открыт, другой человек мог поменять
+   другого участника, и полная запись затёрла бы его правку.
+
+   Функция чистая, поэтому её легко проверить — и проверяется она в
+   reception.html#selftest. Единственное исключение: новому взносу здесь
+   же выдаётся id. Это не побочный эффект ради удобства, а необходимость —
+   без id повторная отправка из очереди создала бы второй такой же взнос,
+   а следующее сравнение посчитало бы его новым ещё раз.
+
+   Общий файл для двух панелей взят именно из-за этой функции: модель
+   участника они дублируют нарочно, но разъехавшееся правило «что
+   считать изменением» означало бы тихо разное поведение с деньгами. */
+const DIFF_KEYS = ['name','role','status','phone','tg','room','fee','note','arrivedAt'];
+const same = (a, b) => JSON.stringify(a === undefined ? null : a)
+                    === JSON.stringify(b === undefined ? null : b);
+const newPayId = () => (global.crypto && crypto.randomUUID)
+  ? crypto.randomUUID() : 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+function diffPerson(before, after){
+  const fields = {}, add = [], drop = [];
+  if (!after) return { fields, add, drop, any:false };
+
+  if (!before){                              // новый человек — карточка целиком
+    for (const k of DIFF_KEYS) if (after[k] !== undefined) fields[k] = after[k];
+    fields.classes = after.classes || [];
+  } else {
+    for (const k of DIFF_KEYS)
+      if (!same(before[k], after[k])) fields[k] = after[k] === undefined ? null : after[k];
+    if (!same(before.classes || [], after.classes || [])) fields.classes = after.classes || [];
+  }
+
+  const was = new Map((before && before.payments || []).filter(y => y.id).map(y => [y.id, y]));
+  for (const y of (after.payments || [])){
+    if (!y.id) y.id = newPayId();
+    if (was.has(y.id)) was.delete(y.id);      // был и остался — не трогаем
+    else add.push(y);
+  }
+  for (const y of was.values()) drop.push(y.id);
+
+  const any = !!(Object.keys(fields).length || add.length || drop.length);
+  return { fields, add, drop, any };
+}
+
+/* Отправка разницы. Возвращает queued:true, если хоть что-то ушло в
+   очередь, а не в базу: панель обязана это показать. */
+async function pushPerson(before, after){
+  const d = diffPerson(before, after);
+  let queued = false;
+  const mark = r => { if (r && r.queued) queued = true; };
+  if (Object.keys(d.fields).length) mark(await savePerson(after.id, d.fields));
+  for (const y of d.add)  mark(await addPayment(after.id, y));
+  for (const id of d.drop) mark(await delPayment(after.id, id));
+  return { queued, changed: d.any };
+}
+
 /* ── 7. ЗАПИСИ НА МАСТЕР-КЛАССЫ ───────────────────────────────────*/
 
 const signups = () => select('signups', 'select=who,name,room,cls,at&order=at');
@@ -304,6 +361,7 @@ global.CampDB = {
   signIn, signOut, session, isOnline, serverStatus,
   staff, staffMe,
   people, savePerson, addPayment, delPayment, delPerson,
+  diffPerson, pushPerson,
   signups, seats, claimSeat,
   camp, saveCamp,
   integrations, saveIntegrations,

@@ -504,49 +504,19 @@ async function push(){
 }
 
 /* ── ПРАВКА В БАЗУ: только то, что изменилось ─────────────────
-   Файловый путь записывал список целиком — там это было единственным
-   способом. В базе так делать нельзя: пока стойка держала экран
-   открытым, штаб мог поменять другого человека, и целый список затёр
-   бы его правку.
+   Файловый путь выше записывает список целиком — там это единственный
+   способ. В базу так писать нельзя: пока стойка держит экран открытым,
+   штаб мог поменять другого человека, и полная запись затёрла бы его
+   правку.
 
-   Поэтому сравниваем «до» и «после» одного участника и отправляем
-   ровно разницу. Обработчики (fn в commit) при этом не меняются: они
-   как раньше правят объект, а что с этим делать — решаем здесь.
+   Что считать изменением, решает CampDB.diffPerson — она общая со
+   штабом нарочно: разъехавшееся правило означало бы тихо разное
+   поведение двух панелей с одними и теми же деньгами.
 
-   Взносы — отдельная таблица, поэтому у них свой путь: добавленные
-   уходят строками, удалённые удаляются по id. Именно это и делает
-   офлайн-догон безопасным для денег. */
-const DIFF_KEYS = ['name','role','status','phone','tg','room','fee','note','arrivedAt'];
-const same = (a, b) => JSON.stringify(a === undefined ? null : a)
-                    === JSON.stringify(b === undefined ? null : b);
-
-async function pushOne(before, after){
-  if(!after) return { queued:false };
-  let queued = false;
-  const mark = r => { if(r && r.queued) queued = true; };
-
-  if(!before){                                   // новый человек: карточка целиком
-    const fields = {};
-    for(const k of DIFF_KEYS) if(after[k] !== undefined) fields[k] = after[k];
-    fields.classes = after.classes || [];
-    mark(await CampDB.savePerson(after.id, fields));
-  } else {
-    const fields = {};
-    for(const k of DIFF_KEYS) if(!same(before[k], after[k])) fields[k] = after[k] ?? null;
-    if(!same(before.classes || [], after.classes || [])) fields.classes = after.classes || [];
-    if(Object.keys(fields).length) mark(await CampDB.savePerson(after.id, fields));
-  }
-
-  const was = new Map((before && before.payments || []).filter(y => y.id).map(y => [y.id, y]));
-  for(const y of (after.payments || [])){
-    if(!y.id) y.id = (crypto.randomUUID ? crypto.randomUUID() : newId() + newId());
-    if(was.has(y.id)) was.delete(y.id);          // был и остался — не трогаем
-    else mark(await CampDB.addPayment(after.id, y));
-  }
-  for(const y of was.values()) mark(await CampDB.delPayment(after.id, y.id));
-
-  return { queued };
-}
+   Обработчики (fn в commit) при этом не меняются вовсе: они как раньше
+   правят объект, а что с этим делать — решается здесь. */
+const pushOne = (before, after) =>
+  after ? CampDB.pushPerson(before, after) : Promise.resolve({ queued:false });
 
 /* ЕДИНСТВЕННЫЙ способ что-то изменить. Перечитать → поменять одного →
    записать. Ничего не «накапливается»: нечего терять и нечего затирать. */
@@ -1156,16 +1126,29 @@ if(location.hash === '#selftest'){ (async () => {
      только изменённые поля. Ошибка тут тихая и дорогая: «отметить
      заезд» обнулило бы взнос. */
   const sent = [];
-  window.CampDB = {
+  const REAL = window.CampDB;                    // camp-db.js уже загружен
+  ok('клиент базы подключён', !!(REAL && REAL.diffPerson));
+  /* Подменяем только отправку. Сравнение — настоящее, из camp-db.js:
+     проверять надо именно его, а не свою копию правил. */
+  const stub = {
     configured: () => true,
     session: () => ({ role:'desk', email:'desk@camp' }),
+    diffPerson: REAL.diffPerson,
     people: async () => [{ id:'anya', name:'Аня', role:'guest', status:'confirmed',
                            phone:'+79001112233', tg:'', room:'12', classes:['Музыка · СР'],
                            fee:8000, note:'', payments:[{ id:'y1', at:'2026-08-26', sum:3000, note:'' }] }],
     savePerson: async (id, fields) => { sent.push(['person', id, fields]); return {}; },
     addPayment: async (id, pay)    => { sent.push(['pay+', id, pay]); return {}; },
     delPayment: async (id, payId)  => { sent.push(['pay-', id, payId]); return {}; },
+    pushPerson: async (before, after) => {
+      const d = REAL.diffPerson(before, after);
+      if(Object.keys(d.fields).length) await stub.savePerson(after.id, d.fields);
+      for(const y of d.add)   await stub.addPayment(after.id, y);
+      for(const id of d.drop) await stub.delPayment(after.id, id);
+      return { queued:false };
+    },
   };
+  window.CampDB = stub;
   P.db = true; P.rw = true; P.raw = ''; P.people = null; P.busy = false; P.h = null;
   window.render = noop; window.toast = noop;
 
@@ -1194,7 +1177,7 @@ if(location.hash === '#selftest'){ (async () => {
   ok('удалённый взнос удаляется по id',
      sent.some(x => x[0] === 'pay-' && x[2] === 'y1'));
 
-  delete window.CampDB; P.db = false;
+  window.CampDB = REAL; P.db = false;
 
   window.render = realRender; window.toast = realToast;
   document.body.innerHTML = `<pre style="padding:26px;font:15px/2 ui-monospace,monospace">${out.join('\n')}</pre>`;

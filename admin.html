@@ -351,6 +351,10 @@ body.locked .top,body.locked .wrap{display:none}
 <input type="file" id="peopleInput" accept=".json,application/json" hidden>
 <input type="file" id="usersInput" accept=".json,application/json" hidden>
 <input type="file" id="csvInput" accept=".csv,.txt,.tsv,text/csv,text/plain" hidden>
+<!-- Единая база: общий клиент со стойкой. Правило «что считать
+     изменением» должно быть одно на две панели — см. camp-db.js.
+     Файла нет или база не настроена — штаб работает по файлам. -->
+<script src="camp-db.js"></script>
 <script>
 /* ═══════════════════════════════════════════════════════════════
    ШТАБ · админ-панель лагеря
@@ -366,7 +370,13 @@ body.locked .top,body.locked .wrap{display:none}
 const $  = (s,r=document) => r.querySelector(s);
 const $$ = (s,r=document) => [...r.querySelectorAll(s)];
 
+/* Единая база включена, если настроена и выполнен вход. Иначе всё ниже
+   идёт прежним путём — по файлам через File System Access. Так переезд
+   включается по одной машине, а не всем сразу. */
+const onDB = () => !!(S.db && window.CampDB && CampDB.configured() && CampDB.session());
+
 const S = {
+  db:false, pBase:null,      // pBase — снимок списка на момент чтения из базы
   html:'', camp:null, people:null, users:null,
   hCamp:null, hPeople:null, hUsers:null, hInteg:null, hDir:null,  // FileSystemFileHandle / DirectoryHandle, если браузер умеет
   mtC:0, mtP:0, mtU:0, mtI:0,                      // время файлов на диске в момент чтения — для защиты от гонки
@@ -896,6 +906,10 @@ function loadPeople(text, name){
     return p;
   });
   S.pName = name; S.pDirty = false;
+  /* Снимок «как было при чтении». Нужен только базе: сохранение
+     отправляет разницу, а не весь список — иначе штаб затирал бы то,
+     что стойка изменила, пока экран был открыт. */
+  S.pBase = onDB() ? JSON.parse(JSON.stringify(S.people)) : null;
   const d = readDraft();
   if(d && d.p && JSON.stringify(d.p) !== JSON.stringify(S.people)) S.draft = d;
   S.view = 'people';
@@ -934,7 +948,41 @@ async function saveLanding(auto){
   S.html = out; S.dirty = false;
   return true;
 }
+/* ── СОХРАНЕНИЕ УЧАСТНИКОВ В БАЗУ ──────────────────────────────
+   Отправляем разницу по каждому изменившемуся человеку, а не список
+   целиком: пока штаб держал экран открытым, стойка могла принять
+   деньги и отметить заезд. Полная запись затёрла бы это молча.
+
+   Удалённых из списка НЕ удаляем из базы автоматически: случайное
+   «пропал из S.people» не должно уносить человека вместе со всеми
+   его взносами. Удаление — отдельное осознанное действие. */
+async function savePeopleDB(auto){
+  const base = new Map((S.pBase || []).map(p => [p.id, p]));
+  let sent = 0, queued = 0, gone = 0;
+  try{
+    for(const p of S.people){
+      const r = await CampDB.pushPerson(base.get(p.id) || null, p);
+      if(r.changed) sent++;
+      if(r.queued)  queued++;
+      base.delete(p.id);
+    }
+    gone = base.size;
+  }catch(err){
+    toast('В базу не сохранилось: ' + err.message, 'err');
+    return false;
+  }
+  S.pBase = JSON.parse(JSON.stringify(S.people));
+  S.pDirty = false;
+  if(!auto && sent) toast(`В базу отправлено: ${sent} ${plural(sent,['карточка','карточки','карточек'])}` +
+                          (queued ? ' · часть в очереди, связи нет' : ''));
+  else if(queued)   toast('Связи нет — правки уйдут в базу, когда появится', 'err');
+  if(gone) toast(`${gone} ${plural(gone,['человек','человека','человек'])} исчез из списка, ` +
+                 `но в базе остался — удаляйте по одному, осознанно`, 'err');
+  return true;
+}
+
 async function savePeopleFile(auto){
+  if(onDB()) return savePeopleDB(auto);
   const out = JSON.stringify(S.people, null, 2);
   if(!S.hPeople){
     if(auto) return false;
