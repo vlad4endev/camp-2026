@@ -5,6 +5,7 @@
 users.json
 participants.json
 signups.json
+integrations.json
 backups/
 
 # Токены ботов: файл панели и переменные окружения

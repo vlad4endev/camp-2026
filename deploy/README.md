@@ -20,10 +20,17 @@
 
 ## Первая установка
 
+Нужен **Node 20.11 или новее**: `server.mjs` использует
+`import.meta.dirname`. В Debian 12 и Ubuntu 24.04 `apt install nodejs`
+ставит 18.x — сервер откажется стартовать и скажет об этом. Поэтому Node
+берём из NodeSource, а не из системного репозитория.
+
 ```bash
 # на сервере, под root
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt install -y nodejs nginx certbot python3-certbot-nginx rsync
+node -v                                   # должно быть v22.x, не v18
 adduser --system --home /srv/camp --shell /bin/bash camp
-apt install -y nodejs nginx certbot python3-certbot-nginx
 mkdir -p /srv/camp && chown camp:camp /srv/camp
 ```
 
