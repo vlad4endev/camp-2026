@@ -17,6 +17,10 @@
      5. Принимает записи на мастер-классы с телефонов (POST /signup) и
         складывает их в signups.json. Это единственный путь записи в папку
         извне; сам файл наружу не отдаётся, его читает только админка.
+     6. Отдаёт блок CAMP из лендинга на GET /camp. Открытая на телефоне
+        страница спрашивает его раз в 30 секунд и пересобирается на месте:
+        штаб сохранил правку — она у всех, без перезагрузки. Ничего нового
+        наружу это не открывает, тот же блок лежит в самом landing.html.
 
    Админку открывать на этом же ноутбуке: http://localhost:8000/admin.html
    (File System Access API работает на localhost — она пишет landing.html
@@ -265,18 +269,25 @@ function writeSignups(list){
 
 /* Мастер-классы и лимиты живут в лендинге — там их правит админка.
    Разбираем тем же приёмом, что и админка, и держим до правки файла. */
-let campCache = { mt:0, classes:[] };
-export function campClasses(){
+let campCache = { mt:0, v:'', camp:null };
+export function campData(){
   const f = path.join(ROOT, 'landing.html');
   try {
     const mt = fs.statSync(f).mtimeMs;
     if (mt !== campCache.mt){
       const m = fs.readFileSync(f, 'utf8').match(/const CAMP\s*=\s*\{[\s\S]*?\n\};/);
-      const camp = new Function('return (' + m[0].slice(m[0].indexOf('{'), -1) + ')')();
-      campCache = { mt, classes: Array.isArray(camp.classes) ? camp.classes : [] };
+      const src = m[0].slice(m[0].indexOf('{'), -1);
+      /* Версия — хэш самого литерала, а не файла: правка вёрстки не должна
+         заставлять полсотни телефонов перерисовываться на ровном месте. */
+      campCache = { mt, v: createHash('sha256').update(src).digest('hex').slice(0, 12),
+                    camp: new Function('return (' + src + ')')() };
     }
   } catch (err) { /* лендинг правят прямо сейчас — живём на прошлом разборе */ }
-  return campCache.classes;
+  return campCache;
+}
+export function campClasses(){
+  const c = campData().camp;
+  return Array.isArray(c && c.classes) ? c.classes : [];
 }
 
 /* Что телефон знает о себе: имя, свои записи и записи, которые сделал
@@ -354,6 +365,18 @@ function seats(send){
   send(200, JSON.stringify(seatsOf(campClasses(), readSignups(), readPeople())), JSONT);
 }
 
+/* GET /camp[?v=…] — данные лендинга целиком: расписание, объявления,
+   тематика дня, мастер-классы, тексты. Штаб сохранил landing.html —
+   открытые телефоны заберут отсюда новую версию и пересоберут страницу,
+   не перезагружаясь. Совпал v — отвечаем «то же самое», без пересылки:
+   раз в 30 секунд с каждого телефона качать десятки килобайт незачем. */
+function camp(send, was){
+  const c = campData();
+  send(200, JSON.stringify(was === c.v && c.v
+    ? { v:c.v, same:true }
+    : { v:c.v, camp:c.camp }), JSONT);
+}
+
 /* ── 4. Сервер ────────────────────────────────────────────────── */
 
 function serve(req, res){
@@ -368,6 +391,8 @@ function serve(req, res){
     return route === '/signup' ? signup(req, res, send) : me(req, res, send);
   }
   if (req.method === 'GET'  && route === '/seats')  return seats(send);
+  if (req.method === 'GET'  && route === '/camp')
+    return camp(send, new URL(req.url, 'http://x').searchParams.get('v'));
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, 'Только GET');
 
   const abs = safePath(req.url);
@@ -438,6 +463,16 @@ function selftest(){
   a(v1 === swBody(sw, 'landing A'),                    'та же страница — та же версия');
   a(/const CACHE = 'offline-camp-[0-9a-f]{12}';/.test(v1), 'CACHE подставлен корректно');
   a(v1.includes('const SHELL=[]'),                     'остальной sw.js не тронут');
+
+  /* /camp — то, чем живёт синхронность: телефон должен получить весь блок
+     данных и версию, по которой поймёт, что штаб что-то поменял. */
+  const cd = campData();
+  a(cd.camp && Array.isArray(cd.camp.days) && cd.camp.days.length > 0,
+                                                       'из лендинга разобран весь CAMP, а не только мастер-классы');
+  a(/^[0-9a-f]{12}$/.test(cd.v),                       'у данных лендинга есть версия');
+  a(campData().v === cd.v && campData().camp === cd.camp,
+                                                       'файл не менялся — версия и разбор те же');
+  a(campClasses() === cd.camp.classes,                 'мастер-классы берутся из того же разбора');
   const P = p => isPublic(p.split('/').join(path.sep));
   a(['landing.html','sw.js','manifest.webmanifest','icons/icon-192.png',
      'icons/apple-touch-icon.png'].every(P),           'всё нужное лендингу раздаётся');
@@ -519,7 +554,11 @@ function selftest(){
 if (process.argv.includes('--selftest')) { selftest(); }
 else {
   watchPeople();
-  http.createServer(serve).listen(PORT, '0.0.0.0', () => {
+  /* В публичном режиме слушаем только loopback: единственный вход снаружи
+     должен быть через nginx, иначе порт 8000 торчал бы в интернет в обход
+     его лимитов и deny-локаций. В юните есть IPAddressDeny=any, но он
+     зависит от BPF в cgroup — а эта строка не зависит ни от чего. */
+  http.createServer(serve).listen(PORT, PUBLIC_ONLY ? '127.0.0.1' : '0.0.0.0', () => {
     const ip = Object.values(os.networkInterfaces()).flat()
       .find(i => i && i.family === 'IPv4' && !i.internal)?.address || 'localhost';
     if (PUBLIC_ONLY) {
