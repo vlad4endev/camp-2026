@@ -417,21 +417,24 @@ create policy staff_read  on staff for select to authenticated using (is_staff()
 create policy staff_write on staff for all    to authenticated
   using (is_staff(array['admin'])) with check (is_staff(array['admin']));
 
--- участники: смотрит весь штаб, правят главный, стойка и вожатый.
--- content — редактор страницы — персональных данных не касается.
+-- Участники: главный, стойка и вожатый. Редактор страницы (content)
+-- персональных данных не видит ВООВЩЕ — не только не правит. Ему нужны
+-- расписание и тексты, а телефоны и деньги к его работе не относятся:
+-- меньше прав — меньше того, что утечёт вместе с его паролем.
 drop policy if exists participants_read  on participants;
 drop policy if exists participants_write on participants;
 create policy participants_read  on participants for select to authenticated
-  using (is_staff());
+  using (is_staff(array['admin','desk','lead']));
 create policy participants_write on participants for all to authenticated
   using (is_staff(array['admin','desk','lead']))
   with check (is_staff(array['admin','desk','lead']));
 
--- взносы: принимает стойка, удалять чужое может только главный
+-- взносы: видит тот же круг, что и участников; принимает стойка
 drop policy if exists payments_read   on payments;
 drop policy if exists payments_insert on payments;
 drop policy if exists payments_delete on payments;
-create policy payments_read   on payments for select to authenticated using (is_staff());
+create policy payments_read   on payments for select to authenticated
+  using (is_staff(array['admin','desk','lead']));
 create policy payments_insert on payments for insert to authenticated
   with check (is_staff(array['admin','desk']));
 create policy payments_delete on payments for delete to authenticated

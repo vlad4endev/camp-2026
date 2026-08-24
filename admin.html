@@ -928,7 +928,42 @@ async function writeTo(handle, text){
   await w.write(text); await w.close();
 }
 async function saveLanding(auto){
-  const out = injectCamp(S.html, S.camp);
+  let out = injectCamp(S.html, S.camp);
+
+  /* ── с единой базой ──
+     Содержимое лагеря живёт в camp_content, а landing.html становится
+     производной: сервер отдаёт расписание телефонам из GET /camp, то
+     есть из базы. Поэтому правка с планшета, где папки лагеря нет
+     вовсе, доезжает до участников — файл для этого не нужен.
+
+     Файл всё равно обновляем, когда он под рукой: именно он уезжает
+     в GitHub и оттуда на публичный домен. */
+  if(onDB()){
+    try{ await CampDB.saveCamp(S.camp); }
+    catch(err){ toast('В базу не сохранилось: ' + err.message, 'err'); return false; }
+    S.dirty = false;
+    if(!S.hCamp){
+      S.html = out;
+      if(!auto) toast('Сохранено в базу — телефоны обновятся сами');
+      return true;
+    }
+    /* Файл поменяли снаружи (правили вёрстку) — берём свежую разметку,
+       но CAMP оставляем свой: он уже в базе, и он источник правды. */
+    const c0 = await conflict(S.hCamp, S.mtC, S.name, auto);
+    if(c0 === 'cancel'){ if(auto) toast('Файл изменился на диске — автосохранение остановлено', 'err'); return false; }
+    if(c0 === 'reload'){
+      const f = await S.hCamp.getFile();
+      S.mtC = f.lastModified;
+      S.html = await f.text();
+      out = injectCamp(S.html, S.camp);
+    }
+    await ensureBackup('camp', S.hCamp, S.name);
+    await writeTo(S.hCamp, out);
+    S.mtC = (await S.hCamp.getFile()).lastModified;
+    S.html = out;
+    return true;
+  }
+
   if(!S.hCamp){
     if(auto) return false;                                   // автосохранение никогда не открывает диалогов
     const h = await pick(false, { suggestedName:S.name, ...HTML_T });
@@ -1188,6 +1223,14 @@ function setInteg(text, name){
   S.iDirty = false;
 }
 async function loadInteg(){
+  /* Токены ботов в базе закрыты политикой на роль admin: вожатому они
+     не нужны, а утёкший токен — это чужой бот от имени лагеря. */
+  if(onDB()){
+    try{ S.integ = { ...INTEG_DEF(), ...(await CampDB.integrations()) }; }
+    catch(_){ S.integ = INTEG_DEF(); }        // нет прав — работаем без них
+    S.iDirty = false;
+    return;
+  }
   if(!/^https?:$/.test(location.protocol)) return;
   try{
     const r = await fetch('integrations.json', { cache:'no-store' });
@@ -1197,6 +1240,10 @@ async function loadInteg(){
   }catch(_){}
 }
 async function saveIntegFile(auto){
+  if(onDB()){
+    try{ await CampDB.saveIntegrations(S.integ); S.iDirty = false; return true; }
+    catch(err){ toast('Токены в базу не сохранились: ' + err.message, 'err'); return false; }
+  }
   const out = JSON.stringify(S.integ, null, 2);
   if(!S.hInteg && S.hDir){
     try{ S.hInteg = await S.hDir.getFileHandle('integrations.json', { create:true }); }catch(_){}
@@ -1299,6 +1346,10 @@ async function gatePlace(){
 function showGate(){
   document.body.classList.add('locked');
   $('#gate').hidden = false;
+  /* База настроена — она и есть список доступа. users.json в этом
+     режиме не читаем вовсе: два списка означали бы два разных ответа
+     на вопрос «кто здесь главный». */
+  if(window.CampDB && CampDB.configured()) return gateDbLogin();
   const has = (S.users || []).some(u => !u.off);
   if(has) return gateLogin();
   /* Пользователей нет. Отличаем «файла правда нет» от «не смогли прочитать»:
@@ -1326,10 +1377,79 @@ function gateLogin(){
     <label class="f"><span>Пароль</span><input id="gPass" type="password" autocomplete="current-password"></label>
     <button class="b-pri" data-gact="login">Войти</button>
     <p class="msg"></p>
-    <div class="alt">Забыли пароль — его задаёт заново «Главный» в разделе «Пользователи».</div>
+    <div class="alt">Забыли пароль — его задаёт заново «Главный» в разделе «Пользователи».
+      <div style="margin-top:9px"><button data-gact="dbsetup">Подключить единую базу</button></div></div>
     ${LIMIT_NOTE}`);
   $('#gLogin').focus();
 }
+/* ── ЕДИНАЯ БАЗА: подключение и вход ────────────────────────────
+   Адрес проекта и ключ anon вводятся один раз и лежат в localStorage
+   этого браузера. Ключ anon публичный по замыслу — сам по себе он не
+   даёт ничего: доступ выдаёт строка в таблице staff, а проверяет её
+   RLS на стороне базы. Поэтому форму ниже можно показывать без входа. */
+function gateDbSetup(){
+  const c = (window.CampDB && CampDB.config()) || {};
+  gateBox(`${gateHead()}
+    <p class="sub">Единая база лагеря. Штаб, стойка, лендинг и боты будут
+      работать с одними данными — с любого устройства.</p>
+    <label class="f"><span>Адрес проекта</span><input id="gUrl" placeholder="https://xxxx.supabase.co"
+      autocapitalize="off" spellcheck="false" value="${esc(c.url || '')}"></label>
+    <label class="f"><span>Ключ anon</span><input id="gAnon" placeholder="eyJhbGci…"
+      autocapitalize="off" spellcheck="false" value="${esc(c.anon || '')}"></label>
+    <button class="b-pri" data-gact="dbsave">Подключить</button>
+    <p class="msg"></p>
+    <div class="alt">Оба значения — в Supabase: Project Settings → API.
+      Ключ <code>service_role</code> сюда вводить НЕЛЬЗЯ: он обходит все
+      права и живёт только на сервере.
+      <div style="margin-top:9px"><button data-gact="dbforget">Вернуться к файлам</button></div></div>
+    ${LIMIT_NOTE}`);
+  const el = $('#gUrl'); if(el) el.focus();
+}
+
+function gateDbLogin(){
+  gateBox(`${gateHead()}
+    <label class="f"><span>E-mail</span><input id="gLogin" type="email" autocomplete="username"
+      autocapitalize="off" spellcheck="false"></label>
+    <label class="f"><span>Пароль</span><input id="gPass" type="password" autocomplete="current-password"></label>
+    <button class="b-pri" data-gact="dblogin">Войти</button>
+    <p class="msg"></p>
+    <div class="alt">Вход общий со стойкой. Пароли задаются в Supabase, а не здесь.
+      <div style="margin-top:9px"><button data-gact="dbsetup">Настройки базы</button></div></div>
+    ${LIMIT_NOTE}`);
+  const el = $('#gLogin'); if(el) el.focus();
+}
+
+async function doDbSave(){
+  const url = String($('#gUrl').value || '').trim();
+  const anon = String($('#gAnon').value || '').trim();
+  if(!/^https?:\/\//.test(url)) return gateErr('Адрес должен начинаться с https://');
+  if(anon.length < 20) return gateErr('Ключ выглядит слишком коротким');
+  /* Ключ service_role отличается от anon только полем role внутри JWT.
+     Смотрим в него: перепутать их — значит выдать браузеру доступ в
+     обход всех прав, и заметить это будет нечем. */
+  try{
+    const body = JSON.parse(atob(anon.split('.')[1] || ''));
+    if(body.role && body.role !== 'anon')
+      return gateErr(`Это ключ «${body.role}», а нужен anon. service_role в браузер вводить нельзя.`);
+  }catch(_){ return gateErr('Это не похоже на ключ Supabase'); }
+  CampDB.configure({ url, anon });
+  gateDbLogin();
+}
+
+async function doDbLogin(){
+  const email = String($('#gLogin').value || '').trim();
+  const pass  = $('#gPass').value;
+  if(!email || !pass) return gateErr('Заполните e-mail и пароль');
+  gateErr('Проверяем…');
+  let s;
+  try{ s = await CampDB.signIn(email, pass); }
+  catch(err){ $('#gPass').value = ''; return gateErr(err.message); }
+  S.db = true;
+  /* Роль из базы кладём в ту же форму, в которой панель ждёт
+     пользователя: остальной код про переезд не знает. */
+  signIn({ login: s.email, name: s.name || s.email, role: s.role, off:false });
+}
+
 function gateNoAccess(){
   gateBox(`${gateHead()}
     <p class="sub">${S.usersMissing
@@ -1340,6 +1460,7 @@ function gateNoAccess(){
       Файл <code>users.json</code> лежит рядом с <code>admin.html</code>, а панель открывается так:
       <code>node server.mjs</code> → <code>http://localhost:8000/admin.html</code>
       ${S.usersMissing ? '' : '<div style="margin-top:9px"><button data-gact="openusers">Открыть users.json вручную</button></div>'}
+      <div style="margin-top:9px"><button data-gact="dbsetup">Подключить единую базу</button></div>
     </div>
     ${LIMIT_NOTE}`);
 }
@@ -1383,6 +1504,27 @@ async function signOut(why){
 }
 
 async function gateBoot(){
+  /* С базой ни users.json, ни папка не нужны: и данные, и права
+     приходят оттуда. Роль перепроверяем у базы, а не берём из
+     sessionStorage — её могли отозвать, пока вкладка была открыта. */
+  if(window.CampDB && CampDB.configured()){
+    await gatePlace();
+    const s = CampDB.session();
+    if(s && s.access){
+      let me = null;
+      try{ me = await CampDB.staffMe(); }catch(_){}
+      if(me){
+        S.db = true;
+        return signIn({ login: s.email, name: me.name || s.email, role: me.role, off:false });
+      }
+      CampDB.signOut();
+    }
+    showGate();
+    let w = null;
+    try{ w = sessionStorage.getItem('camp-admin-why'); sessionStorage.removeItem('camp-admin-why'); }catch(_){}
+    if(w) gateErr(w);
+    return;
+  }
   await Promise.all([loadUsers(), loadInteg(), gatePlace()]);
   if(ONSRV) await useServer();       // файлы с сервера, папку не спрашиваем
   let who = null;
@@ -1399,11 +1541,16 @@ $('#gate').addEventListener('click', e => {
   const b = e.target.closest('[data-gact]');
   if(!b) return;
   e.preventDefault();
-  ({ login:doLogin, openusers:openUsers }[b.dataset.gact] || (() => {}))();
+  ({ login:doLogin, openusers:openUsers,
+     dblogin:doDbLogin, dbsave:doDbSave, dbsetup:gateDbSetup,
+     dbforget: () => { CampDB.forget(); showGate(); },
+   }[b.dataset.gact] || (() => {}))();
 });
 $('#gate').addEventListener('keydown', e => {
   if(e.key !== 'Enter') return;
-  const b = $('#gate [data-gact=login]');
+  /* Enter нажимает главную кнопку экрана, какой бы она ни была: вход
+     по файлу, вход в базу или её подключение. */
+  const b = $('#gate .b-pri[data-gact]');
   if(b){ e.preventDefault(); b.click(); }
 });
 </script>
@@ -2516,6 +2663,16 @@ function rosterHtml(){
    по кнопке «Внести», и уже как обычные мастер-классы участника:
    печать, фильтры и списки работают дальше сами. */
 async function loadSigns(quiet){
+  /* С базой записи приходят из таблицы signups — и файл, и папка для
+     этого не нужны: штаб читает их с любого устройства. */
+  if(onDB()){
+    try{ S.signs = await CampDB.signups(); }
+    catch(err){
+      S.signs = S.signs || [];
+      if(!quiet) toast('Записи из базы не прочитались: ' + err.message, 'err');
+    }
+    return;
+  }
   /* На сервере папки нет, а записи с телефонов — главное, зачем панель
      открывают с телефона. Читаем их по HTTP: порт панели signups.json
      отдаёт, публичный порт — нет. */
@@ -3217,7 +3374,49 @@ async function resume(kind){
    прочитать без диалога. Права на ЗАПИСЬ это не даёт: сохранение
    по-прежнему спросит, куда писать. На file:// fetch запрещён — там
    остаётся обычное открытие файла. */
+/* ── ЗАГРУЗКА ИЗ ЕДИНОЙ БАЗЫ ────────────────────────────────────
+   Ни файлов, ни папки: штаб открывается с любого устройства и сразу
+   видит то же, что стойка. Разметку лендинга всё же подтягиваем, если
+   она рядом — без неё нечего перегенерировать для выкладки в GitHub. */
+async function autoLoadDB(){
+  try{
+    const c = await CampDB.camp();
+    if(c && c.camp){
+      /* Разметка нужна только для файла. Нет её — держим пустую:
+         injectCamp тогда просто не найдёт куда вклеить, и сохранение
+         уйдёт в базу, чего для телефонов достаточно. */
+      /* Разметка нужна не только для файла: из неё разбираются цвета
+         метк, типы событий, набор значков и правила проверки — словарь
+         редактора. Панель, открытая через сервер (в том числе с планшета
+         по /admin/), получает её обычным fetch. Совсем без разметки
+         редактировать расписание можно, но метки и значки будут пустыми. */
+      let html = '';
+      if(/^https?:$/.test(location.protocol))
+        try{ const r = await fetch('landing.html', { cache:'no-store' });
+             if(r.ok) html = await r.text(); }catch(_){}
+      if(html) loadLanding(html, 'landing.html');
+      else toast('Разметка лендинга недоступна — метки и значки будут пустыми', 'err');
+      S.camp = c.camp;                     // из базы, а не из файла: она источник правды
+      S.dirty = false;
+    }
+  }catch(err){ toast('Расписание из базы не прочиталось: ' + err.message, 'err'); }
+
+  if(can('people')) try{
+    const rows = await CampDB.people();
+    loadPeople(JSON.stringify(rows), 'база');
+  }catch(err){ toast('Участники из базы не прочитались: ' + err.message, 'err'); }
+
+  await loadInteg();
+  try{ await loadSigns(true); }catch(_){}
+
+  S.view = can('dash') ? 'dash' : S.view;
+  render();
+  toast('Единая база подключена');
+  return true;
+}
+
 async function autoLoad(){
+  if(onDB()) return autoLoadDB();
   if(!/^https?:$/.test(location.protocol)) return false;
   let loaded = false;
   try{

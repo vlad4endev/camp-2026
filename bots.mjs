@@ -24,6 +24,10 @@
 import fs   from 'node:fs';
 import path from 'node:path';
 import os   from 'node:os';
+/* Единая база. Без SUPABASE_URL выключена, и бот пишет в файлы,
+   как раньше. Читает он по-прежнему из файлов: при включённой базе
+   это зеркало, которое обновляет server.mjs. */
+import * as db from './db.mjs';
 
 const ROOT      = import.meta.dirname;
 const PORT      = Number(process.env.CAMP_PORT) || 8000;
@@ -91,7 +95,24 @@ function saveLinks(){                    // пачкой: нажатий кно�
       fs.writeFileSync(LINKS + '.tmp', JSON.stringify(L, null, 2));
       fs.renameSync(LINKS + '.tmp', LINKS);
     } catch (err) { console.error('bots.json:', err.message); }
+    mirrorLinks();
   }, 500);
+}
+
+/* bots.json остаётся у бота: «что уже разослано» — состояние процесса,
+   базе про него знать нечего. А вот привязка «аккаунт → участник» —
+   общее знание, и штаб должен видеть, кто подключил бота. Поэтому её
+   отражаем в bot_links. По возможности: не вышло — не беда, работа
+   бота от этого не зависит. */
+function mirrorLinks(){
+  if (!db.configured()) return;
+  const rows = Object.entries(L.users || {}).map(([account, u]) => ({
+    account,
+    phone_key: String((u && u.phone) || '').replace(/\D/g, '').slice(-10) || null,
+    participant_id: (personOf(account) || {}).id || null,
+  }));
+  if (rows.length)
+    db.upsert('bot_links', rows).catch(err => console.error('bot_links:', err.message));
 }
 
 const personOf = key => {
@@ -145,9 +166,34 @@ function noteIds(phone, patch){
   clearTimeout(flushT);
   flushT = setTimeout(flushIds, 30000);
 }
-function flushIds(){
+async function flushIds(){
   const todo = pending;
   pending = {};
+
+  /* С базой пишем туда, а не в зеркало: следующий pull() затёр бы файл.
+     Правило приоритета при этом одно и то же — прогоняем applyIds по
+     копии и отправляем получившуюся разницу. Иначе «ник, вписанный
+     штабом, важнее» пришлось бы повторять здесь второй раз, и однажды
+     эти две копии разошлись бы. */
+  if (db.configured()){
+    const people = readPeople();
+    const copy   = JSON.parse(JSON.stringify(people));
+    if (!applyIds(copy, todo)) return;
+    let n = 0;
+    for (let i = 0; i < copy.length; i++){
+      const was = people[i], now = copy[i], fields = {};
+      for (const k of ['tg', 'tgId', 'maxId'])
+        if (JSON.stringify(was[k] ?? null) !== JSON.stringify(now[k] ?? null))
+          fields[k] = now[k] ?? null;
+      if (Object.keys(fields).length && now.id){
+        try { await db.savePerson(now.id, fields); n++; }
+        catch (err) { console.error('база:', err.message); }
+      }
+    }
+    if (n) console.log(`база: дописано участников — ${n}`);
+    return;
+  }
+
   const n = writeIds(todo);
   if (n) console.log(`participants.json: дописано полей — ${n}`);
 }

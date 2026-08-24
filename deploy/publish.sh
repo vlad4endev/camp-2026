@@ -5,7 +5,7 @@
 #   ./deploy/publish.sh            — запушить код и забрать копию данных
 #   ./deploy/publish.sh code       — только код (git push)
 #   ./deploy/publish.sh pull       — только забрать копию данных с сервера
-#   ./deploy/publish.sh seed       — залить участников и учётки на ПУСТОЙ сервер
+#   ./deploy/publish.sh restore    — вернуть данные из копии на ПУСТОЙ сервер
 #
 # Сервер сам подтягивает main каждые 2 минуты (camp-pull.timer).
 set -euo pipefail
@@ -47,16 +47,17 @@ pull(){
   done
 }
 
-# ── Первичное заполнение пустого сервера ──────────────────────────
-# Полные карточки и учётки: панель на домене должна видеть взносы и оплаты,
-# иначе ресепшен не сможет принимать деньги. Делать это ПОВТОРНО опасно —
-# затрёт то, что штаб уже наработал на сервере, поэтому спрашиваем.
-seed(){
+# ── Восстановление из копии ───────────────────────────────────────
+# Обычно не нужно: сервер сам себе источник правды, доступ заводится там же
+# (deploy/mkuser.mjs), участники появляются через панель. Это путь на случай
+# «сервер потеряли, есть копия от publish.sh pull». Затирает то, что на
+# сервере есть, поэтому спрашивает.
+restore(){
   local have
   have=$(ssh "$HOST" "wc -c < $DIR/participants.json 2>/dev/null || echo 0")
   if [ "${have:-0}" -gt 4 ]; then
     echo "  На сервере уже есть участники ($have байт)."
-    echo "  Заливка затрёт их. Если это действительно нужно — CAMP_FORCE_SEED=1"
+    echo "  Восстановление затрёт их. Если это действительно нужно — CAMP_FORCE_SEED=1"
     [ "${CAMP_FORCE_SEED:-}" = "1" ] || exit 1
   fi
   for f in participants.json users.json integrations.json; do
@@ -71,9 +72,9 @@ seed(){
 case "$MODE" in
   code) code ;;
   pull) pull ;;
-  seed) seed ;;
+  restore) restore ;;
   all)  code; pull ;;
-  *)    echo "не знаю режим «$MODE»; бывают: code, pull, seed или без аргумента"; exit 1 ;;
+  *)    echo "не знаю режим «$MODE»; бывают: code, pull, restore или без аргумента"; exit 1 ;;
 esac
 echo
 echo "  Лендинг:  https://camp.offline-tambov.ru/"

@@ -145,22 +145,37 @@ export function swBody(swText, landingText){
 
 /* Админка бэкапит участников один раз за сессию — а сумма оплат
    перезаписывается каждые две секунды. Храним 20 последних состояний. */
-let lastSnap = '';
-export function snapPeople(){
-  const src = path.join(ROOT, 'participants.json');
-  const dir = path.join(ROOT, 'backups');
+/* Снимки в backups/: 20 последних состояний каждого файла.
+
+   Теперь это единственная история правок, которая есть у лендинга: его
+   правит панель на сервере, а не git. Поэтому снимаем и его, а не только
+   участников — иначе «откатить объявление» было бы неоткуда.
+
+   users.json и integrations.json не снимаем намеренно: множить копии
+   хэшей и токенов по папке — плохая идея, а терять там нечего, эти файлы
+   не наполняются day-to-day. */
+const SNAP = new Set(['participants.json', 'landing.html']);
+const lastSnap = {};
+
+export function snapFile(name){
+  if (!SNAP.has(name)) return;
+  const src  = path.join(ROOT, name);
+  const dir  = path.join(ROOT, 'backups');
+  const stem = name.replace(/\.[^.]+$/, '');
+  const ext  = path.extname(name);
   try {
     const text = fs.readFileSync(src, 'utf8');
-    if (text === lastSnap || !text.trim()) return;
-    lastSnap = text;
+    if (text === lastSnap[name] || !text.trim()) return;
+    lastSnap[name] = text;
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-    fs.writeFileSync(path.join(dir, `participants-${stamp}.json`), text);
-    const old = fs.readdirSync(dir).filter(n => n.startsWith('participants-')).sort();
+    fs.writeFileSync(path.join(dir, `${stem}-${stamp}${ext}`), text);
+    const old = fs.readdirSync(dir).filter(n => n.startsWith(stem + '-')).sort();
     for (const n of old.slice(0, Math.max(0, old.length - 20)))
       fs.rmSync(path.join(dir, n), { force: true });
-  } catch (err) { console.error('снимок участников не удался:', err.message); }
+  } catch (err) { console.error(`снимок ${name} не удался:`, err.message); }
 }
+export const snapPeople = () => snapFile('participants.json');
 
 /* fs.watch ловит правки извне — rsync с ноутбука. Записи из панели он бы
    пропустил: PUT кладёт файл через .tmp + rename, а rename подменяет inode
@@ -492,7 +507,7 @@ function put(req, res, send, role = 'panel'){
     } catch (err) {
       return send(500, JSON.stringify({ ok:false, error:err.message }), JSONT);
     }
-    if (name === 'participants.json') snapPeople();
+    snapFile(name);                            // участники и лендинг — в backups/
     send(200, JSON.stringify({ ok:true, bytes: Buffer.byteLength(text) }), JSONT);
   });
 }

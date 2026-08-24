@@ -63,6 +63,17 @@ install -m644 -o camp -g camp *.mjs *.js manifest.webmanifest \
 # из репозитория ровно один раз, когда файла на сервере ещё нет; дальше
 # git-версия остаётся образцом для нового лагеря, а не источником правды.
 [ -f "$APP/landing.html" ] || install -m644 -o camp -g camp landing.html "$APP/"
+
+# Пустой список участников при первом запуске: тогда /me и панель отвечают
+# осмысленно с самого начала, а не «файла нет». users.json здесь НЕ создаём:
+# пустой файл сломал бы разбор, а отсутствие панель понимает и прямо
+# говорит, что вход не настроен. Первого пользователя заводит
+# deploy/mkuser.mjs — сама панель этого намеренно не умеет.
+if [ ! -f "$APP/participants.json" ]; then
+  echo '[]' > "$APP/participants.json"
+  chown camp:camp "$APP/participants.json"
+  log "создан пустой participants.json — заведите доступ: deploy/mkuser.mjs admin"
+fi
 # --delete внутри icons/ и deploy/ безопасен: это папки только с кодом,
 # живых данных в них нет. В корне $APP --delete не применяется никогда.
 rsync -a --delete --chown=camp:camp icons deploy "$APP/"
