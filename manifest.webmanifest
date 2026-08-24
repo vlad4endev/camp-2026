@@ -1,0 +1,16 @@
+{
+  "name": "Офлайн Кемп — лагерь 2026",
+  "short_name": "Офлайн Кемп",
+  "description": "Что происходит в лагере прямо сейчас: расписание, объявления, мастер-классы, тематика дня.",
+  "lang": "ru",
+  "start_url": "./landing.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#07150A",
+  "theme_color": "#07150A",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

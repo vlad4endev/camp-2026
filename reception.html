@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Ресепшн · Офлайн Кемп</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" media="print" onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@700;800&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+/* Токены те же, что в штабе и на лендинге: одна семья, не три проекта.
+   Размеры крупнее: за стойкой смотрят с вытянутой руки и тыкают пальцем. */
+:root{
+  --bg:#F3F6F4; --panel:#fff; --line:#E2EAE5; --line2:#D3DED7;
+  --ink:#0C1711; --mut:#5F7568; --acc:#2A6B3E; --acc2:#48B873; --accw:#E9F6ED;
+  --warn:#D9940A; --warnw:#FFF6E6; --err:#E5533C; --errw:#FFF0EC;
+  --r:14px; --sh:0 1px 2px rgba(11,23,16,.05),0 8px 24px rgba(11,23,16,.06);
+  --dsp:'Manrope',-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;
+  --ease:cubic-bezier(.22,.61,.36,1);
+  --tap:46px;                                   /* минимальная кнопка под палец */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:15px/1.45 'Inter',-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;background:var(--bg);color:var(--ink);
+     display:flex;flex-direction:column;overflow:hidden;-webkit-font-smoothing:antialiased;
+     -webkit-tap-highlight-color:transparent}
+body.locked>.top,body.locked>.main{filter:blur(7px);pointer-events:none;user-select:none}
+button,input,textarea,select{font:inherit}
+button{border:1px solid transparent;border-radius:11px;background:var(--panel);color:var(--ink);
+       font-weight:650;cursor:pointer;white-space:nowrap;transition:filter .12s var(--ease),transform .06s}
+button:hover:not(:disabled){filter:brightness(.96)}
+button:active:not(:disabled){transform:translateY(1px)}
+button:disabled{opacity:.42;cursor:not-allowed}
+:focus-visible{outline:3px solid var(--acc2);outline-offset:2px}
+
+/* ── шапка ─────────────────────────────────────────────── */
+.top{display:flex;align-items:center;gap:10px;padding:9px 14px;background:#0F2417;color:#fff;flex-wrap:wrap;flex-shrink:0}
+.brand{font-family:var(--dsp);font-weight:800;font-size:17px;letter-spacing:-.02em;display:flex;align-items:center;gap:8px}
+.brand svg{width:15px;height:19px}
+.spacer{flex:1}
+.pill{display:inline-flex;align-items:baseline;gap:6px;padding:5px 12px;border-radius:999px;
+      background:rgba(255,255,255,.08);font-size:12px;color:#BFD8C8;font-weight:600;white-space:nowrap}
+.pill b{font-family:var(--dsp);font-size:16px;font-weight:800;color:#fff;letter-spacing:-.02em}
+.pill.wn b{color:#FFD37A}
+.pill.ok b{color:#7FE0A6}
+.fchip{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:650;padding:6px 12px;border-radius:999px;
+  background:rgba(255,255,255,.09);color:#CFE3D6;cursor:pointer;border:1px solid transparent}
+.fchip:hover{background:rgba(255,255,255,.17)}
+.fchip i{width:8px;height:8px;border-radius:50%;background:#7FBFA0;font-style:normal;flex-shrink:0}
+.fchip.ro i{background:var(--warn)}
+.fchip.off i{background:#E5533C}
+.b-gh{background:transparent;color:#fff;border-color:rgba(255,255,255,.22);padding:7px 12px;font-size:13px}
+.who{font-size:12.5px;color:#9DBCA9;font-weight:600}
+
+/* ── каркас ────────────────────────────────────────────── */
+.main{flex:1;display:grid;grid-template-columns:minmax(320px,400px) minmax(0,1fr);overflow:hidden}
+.pane{display:flex;flex-direction:column;overflow:hidden;background:var(--panel);border-right:1px solid var(--line)}
+
+/* ── поиск ─────────────────────────────────────────────── */
+.search{padding:12px 12px 8px;border-bottom:1px solid var(--line);flex-shrink:0}
+.sbox{position:relative;display:flex;align-items:center}
+.sbox svg{position:absolute;left:14px;width:19px;height:19px;color:var(--mut);pointer-events:none}
+.sbox input{width:100%;height:52px;padding:0 44px 0 42px;font-size:17px;font-weight:600;
+  border:2px solid var(--line2);border-radius:13px;background:var(--bg);color:var(--ink)}
+.sbox input:focus{outline:0;border-color:var(--acc2);background:#fff}
+.sbox input::placeholder{font-weight:500;color:#93A79A}
+.sclr{position:absolute;right:7px;width:34px;height:34px;border-radius:9px;background:transparent;color:var(--mut);
+      font-size:17px;display:grid;place-items:center;padding:0}
+.chips{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
+.chip{padding:7px 12px;border-radius:999px;border:1px solid var(--line2);background:#fff;color:var(--mut);
+      font-size:12.5px;font-weight:650;flex-shrink:0}
+.chip[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:#fff}
+.chip b{font-weight:800;margin-left:5px;opacity:.65}
+
+/* ── список ────────────────────────────────────────────── */
+.list{flex:1;overflow-y:auto;overscroll-behavior:contain}
+.li{display:flex;align-items:center;gap:11px;padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;
+    min-height:62px}
+.li:hover{background:var(--bg)}
+.li[aria-selected=true]{background:var(--accw);box-shadow:inset 3px 0 0 var(--acc)}
+.av{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;flex-shrink:0;
+    font-family:var(--dsp);font-weight:800;font-size:13.5px;color:#fff;letter-spacing:-.02em}
+.li .txt{min-width:0;flex:1}
+.li .nm{font-weight:700;font-size:15px;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li .mt{font-size:12.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.li .rt{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
+.tag{font-size:11px;font-weight:750;padding:3px 8px;border-radius:999px;white-space:nowrap}
+.dbt{font-size:11.5px;font-weight:800;color:var(--warn);white-space:nowrap}
+.tick{width:42px;height:42px;border-radius:11px;border:1.5px solid var(--line2);background:#fff;color:#B7C7BC;
+      font-size:19px;display:grid;place-items:center;flex-shrink:0;padding:0}
+.tick.on{background:var(--acc2);border-color:var(--acc2);color:#fff}
+.empty{padding:34px 20px;text-align:center;color:var(--mut);font-size:13.5px;line-height:1.7}
+.lfoot{padding:10px 12px;border-top:1px solid var(--line);flex-shrink:0}
+.b-new{width:100%;height:var(--tap);background:var(--bg);border:1.5px dashed var(--line2);color:var(--acc);font-size:14px}
+.b-new:hover{background:var(--accw);border-color:var(--acc2)}
+
+/* ── карточка ──────────────────────────────────────────── */
+.card{overflow-y:auto;padding:0 0 40px;overscroll-behavior:contain}
+.blank{height:100%;display:grid;place-items:center;padding:30px;text-align:center}
+.blank div{max-width:330px;color:var(--mut);font-size:14px;line-height:1.75}
+.blank .big{font-family:var(--dsp);font-size:21px;font-weight:800;color:var(--ink);letter-spacing:-.03em;margin-bottom:8px}
+.ch{display:flex;align-items:center;gap:13px;padding:16px 20px;border-bottom:1px solid var(--line);
+    background:var(--panel);position:sticky;top:0;z-index:3}
+.ch .av{width:50px;height:50px;font-size:17px}
+.ch .nmwrap{flex:1;min-width:0}
+.ch input.nm{width:100%;font-family:var(--dsp);font-size:23px;font-weight:800;letter-spacing:-.032em;
+  border:1px solid transparent;border-radius:9px;padding:3px 7px;margin-left:-7px;background:transparent;color:var(--ink)}
+.ch input.nm:hover{background:var(--bg)}
+.ch input.nm:focus{outline:0;background:#fff;border-color:var(--acc2)}
+.ch .sub{font-size:12.5px;color:var(--mut);margin:1px 0 0 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.x{width:42px;height:42px;border-radius:11px;background:var(--bg);color:var(--mut);font-size:17px;padding:0;flex-shrink:0}
+
+/* Читать строку в 1200 пикселей за стойкой невозможно: держим колонку. */
+.hero{padding:14px 20px;display:flex;gap:10px;flex-wrap:wrap;max-width:900px}
+.sec>*{max-width:860px}
+.ch .nmwrap{max-width:700px}
+.b-hero{flex:1;min-width:210px;height:58px;border-radius:14px;font-family:var(--dsp);font-size:17px;font-weight:800;
+  letter-spacing:-.02em;background:var(--acc2);color:#fff;box-shadow:0 4px 14px rgba(72,184,115,.32)}
+.b-hero.leave{background:#fff;color:var(--ink);border:1.5px solid var(--line2);box-shadow:none}
+.b-hero.money{background:var(--acc);box-shadow:0 4px 14px rgba(42,107,62,.28)}
+
+.sec{padding:15px 20px;border-top:1px solid var(--line)}
+.sec h4{font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--mut);margin-bottom:10px}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button{min-height:var(--tap);padding:0 15px;border:1.5px solid var(--line2);background:#fff;color:var(--mut);font-size:13.5px}
+.seg button[aria-pressed=true]{color:#fff;border-color:transparent}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+.f{display:block}
+.f>span{display:block;font-size:10.5px;font-weight:750;color:var(--mut);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
+.f input,.f textarea{width:100%;min-height:var(--tap);padding:10px 12px;font-size:15px;font-weight:600;
+  border:1.5px solid var(--line2);border-radius:11px;background:#fff;color:var(--ink)}
+.f input.room{font-family:var(--dsp);font-size:22px;font-weight:800;letter-spacing:-.02em;height:56px}
+.f textarea{resize:vertical;line-height:1.55;font-weight:500;font-size:14px}
+.f input:focus,.f textarea:focus{outline:0;border-color:var(--acc2)}
+
+.mrow{display:flex;align-items:baseline;gap:9px;margin-bottom:9px;flex-wrap:wrap}
+.msum{font-family:var(--dsp);font-size:27px;font-weight:800;letter-spacing:-.035em;line-height:1}
+.mof{font-size:13px;color:var(--mut);font-weight:600}
+.bar{height:9px;border-radius:999px;background:var(--line);overflow:hidden;margin-bottom:13px}
+.bar i{display:block;height:100%;border-radius:999px;background:var(--acc2);transition:width .3s var(--ease)}
+.bar.done i{background:var(--acc)}
+.pays{display:grid;gap:6px;margin-bottom:11px}
+.pay{display:grid;grid-template-columns:132px 108px 1fr 42px;gap:7px;align-items:center}
+.pay input{min-height:42px;padding:8px 10px;font-size:14px;font-weight:600;border:1.5px solid var(--line2);
+  border-radius:10px;background:#fff;color:var(--ink);width:100%}
+.pay input:focus{outline:0;border-color:var(--acc2)}
+.pay button{height:42px;color:var(--err);background:var(--bg);border:1.5px solid var(--line);padding:0}
+.quick{display:flex;gap:7px;flex-wrap:wrap}
+.quick button{min-height:var(--tap);padding:0 15px;background:var(--bg);border:1.5px solid var(--line2);font-size:14px}
+.quick button.pri{background:var(--acc);color:#fff;border-color:transparent}
+
+.ro{display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:0 13px;border-radius:999px;
+    border:1.5px solid var(--line2);background:#fff;font-size:13.5px;font-weight:650;color:var(--ink);text-decoration:none}
+.ro:hover{background:var(--bg)}
+.clschip{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:999px;
+  background:var(--accw);color:#1E5632;font-size:13px;font-weight:650}
+
+/* ── вход ──────────────────────────────────────────────── */
+#gate{position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:22px;
+  background:linear-gradient(170deg,#0B1D13,#123021 60%,#0F2417)}
+#gate[hidden]{display:none}
+.gbox{width:100%;max-width:370px;background:var(--panel);border-radius:20px;padding:26px 24px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.gbox .mark{display:flex;align-items:center;gap:9px;color:var(--acc);margin-bottom:3px}
+.gbox .mark svg{width:17px;height:21px}
+.gbox h1{font-family:var(--dsp);font-size:23px;font-weight:800;letter-spacing:-.035em}
+.gbox .eyebrow{font-size:12.5px;color:var(--mut);font-weight:600;margin-bottom:17px}
+.gbox .f{margin-bottom:11px}
+.gbox .b-pri{width:100%;height:var(--tap);background:var(--acc2);color:#fff;font-size:15px;margin-top:4px}
+.msg{min-height:19px;font-size:12.5px;color:var(--err);font-weight:650;margin-top:9px}
+.lim{font-size:11.5px;color:var(--mut);line-height:1.6;margin-top:15px;padding-top:13px;border-top:1px solid var(--line)}
+
+/* ── мелочи ────────────────────────────────────────────── */
+#toasts{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:80;display:grid;gap:7px;justify-items:center}
+.toast{background:#0F2417;color:#fff;padding:11px 18px;border-radius:12px;font-size:13.5px;font-weight:650;
+  box-shadow:0 8px 26px rgba(0,0,0,.28);animation:up .2s var(--ease)}
+.toast.err{background:var(--err)}
+@keyframes up{from{opacity:0;transform:translateY(9px)}}
+.note{background:var(--warnw);color:#8A5D00;padding:10px 14px;font-size:12.5px;font-weight:600;line-height:1.55;
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.note button{background:#fff;border:1px solid #E7D6A8;color:#8A5D00;padding:6px 12px;font-size:12.5px}
+
+@media(max-width:820px){
+  .main{grid-template-columns:1fr}
+  .card{position:fixed;inset:0;z-index:20;background:var(--panel);padding-bottom:70px}
+  .card[hidden]{display:none}
+  body.card-open .pane{display:none}
+  .pay{grid-template-columns:1fr 1fr;grid-template-areas:'d s' 'n n' 'x x'}
+  .pay input[type=date]{grid-area:d} .pay input[type=number]{grid-area:s}
+  .pay input:not([type]){grid-area:n} .pay button{grid-area:x;width:100%}
+}
+@media(min-width:821px){ .x.only-narrow{display:none} .card[hidden]{display:block} }
+</style>
+</head>
+<body class="locked">
+
+<div id="gate"><div class="gbox"><p class="eyebrow">Проверяем, кто открыл ресепшн…</p></div></div>
+
+<header class="top">
+  <span class="brand"><svg viewBox="0 0 18 22" fill="currentColor"><path d="M9 0 3.5 9h2.9L1.2 18.6h6.7V22h2.2v-3.4h6.7L11.6 9h2.9z"/></svg>Ресепшн</span>
+  <span id="stats" class="row" style="display:flex;gap:7px;flex-wrap:wrap"></span>
+  <span class="spacer"></span>
+  <span id="fstate"></span>
+  <a class="b-gh" href="admin.html" style="text-decoration:none;display:inline-flex;align-items:center">Штаб ↗</a>
+  <span id="me" class="who"></span>
+  <button class="b-gh" data-act="out">Выйти</button>
+</header>
+
+<div id="banner" hidden></div>
+
+<div class="main">
+  <section class="pane">
+    <div class="search">
+      <div class="sbox">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
+        <input id="q" placeholder="Имя, телефон, комната…" autocomplete="off" spellcheck="false" enterkeyhint="search">
+        <button class="sclr" id="qclr" hidden data-act="clr" title="Очистить (Esc)">✕</button>
+      </div>
+      <div class="chips" id="chips"></div>
+    </div>
+    <div class="list" id="list"></div>
+    <div class="lfoot"><button class="b-new" data-act="new">+ Новый участник</button></div>
+  </section>
+  <section class="card" id="card"></section>
+</div>
+
+<div id="toasts"></div>
+<input type="file" id="pFile" accept=".json,application/json" hidden>
+<input type="file" id="uFile" accept=".json,application/json" hidden>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   РЕСЕПШН · стойка регистрации
+
+   Отдельная страница, а не раздел штаба: за стойкой нужен один
+   экран — поиск, крупная карточка, заезд и деньги. Всё остальное
+   (лендинг, расписание, печать) только мешало бы попадать пальцем.
+
+   ОДИН ФАЙЛ НА ТРОИХ. participants.json пишут ещё двое: штаб
+   (admin.html) и бот (bots.mjs дописывает tgId/maxId). Поэтому здесь
+   НЕТ «своей копии списка, которую мы иногда сохраняем»: каждое
+   действие — это «перечитали файл с диска → поменяли одного человека
+   → записали». Копия в памяти живёт только до следующего касания.
+   Из-за этого чужая правка не может быть затёрта нашим экраном,
+   открытым полчаса назад.
+
+   ГРАНИЦА ДОСТУПА не здесь, а в server.mjs: reception.html нет в
+   PUBLIC_FILES, значит из лагерной Wi-Fi это 404. Вход ниже — второй
+   слой: он закрывает стойку от того, кто подошёл к чужому ноутбуку.
+   ═══════════════════════════════════════════════════════════════ */
+
+const $  = (s,r=document) => r.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pad = n => String(n).padStart(2,'0');
+const nowLocal = () => { const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const today = () => nowLocal().slice(0,10);
+const money = n => (Number(n)||0).toLocaleString('ru-RU') + ' ₽';
+const digits = s => String(s||'').replace(/\D/g,'');
+function plural(n,f){ const a=Math.abs(n)%100, b=a%10;
+  if(a>10&&a<20) return f[2]; if(b>1&&b<5) return f[1]; if(b===1) return f[0]; return f[2]; }
+
+function toast(text, kind){
+  const el = document.createElement('div');
+  el.className = 'toast' + (kind ? ' ' + kind : '');
+  el.textContent = text;
+  $('#toasts').append(el);
+  setTimeout(() => el.remove(), 2800);
+}
+
+/* ── МОДЕЛЬ УЧАСТНИКА ────────────────────────────────────────
+   Один в один с admin.html: это один и тот же файл. Меняете там —
+   меняйте здесь, иначе штаб и стойка начнут спорить о том, что
+   означает статус. Проверка соответствия — в #selftest внизу.      */
+const PERSON = { name:'', role:'guest', status:'new', phone:'', tg:'', room:'',
+                 classes:[], fee:0, payments:[], note:'' };
+const STATUS = {
+  new:      { l:'Заявка',      dot:'#A8BFB1', bg:'#EEF2EF', fg:'#5F7568' },
+  confirmed:{ l:'Подтверждён', dot:'#4A90E0', bg:'#EAF2FB', fg:'#1E4A66' },
+  arrived:  { l:'Заехал',      dot:'#48B873', bg:'#E9F6ED', fg:'#1E5632' },
+  left:     { l:'Уехал',       dot:'#C7B9A0', bg:'#F7F4EE', fg:'#6B5A3E' },
+  cancelled:{ l:'Отказ',       dot:'#E5533C', bg:'#FFF0EC', fg:'#B23A22' },
+};
+const ROLE = { guest:{ l:'Отдыхающий' }, team:{ l:'Команда' } };
+const stOf   = p => STATUS[p.status] || STATUS.new;
+const active = p => p.status !== 'cancelled';
+const paidOf = p => (p.payments || []).reduce((a,x) => a + (Number(x.sum) || 0), 0);
+const debtOf = p => Math.max(0, (Number(p.fee) || 0) - paidOf(p));
+
+/* взнос по умолчанию берём из настроек штаба — тот же localStorage, тот же origin */
+const defFee = () => { try{ return Number(JSON.parse(localStorage.getItem('camp-admin-fee'))) || 0; }catch(_){ return 8000; } };
+
+/* id нужен, чтобы «изменить Аню» пережило перечитывание файла: индекс в
+   массиве после чужой правки указывает уже на другого человека.
+   Штаб и бот лишние поля не трогают — id доезжает обратно на диск. */
+const newId = () => (crypto.randomUUID ? crypto.randomUUID().slice(0,8)
+                                       : Math.random().toString(36).slice(2,10));
+
+function normalize(arr){
+  const seen = new Set();
+  return arr.filter(x => x && typeof x === 'object').map(x => {
+    const p = { ...PERSON, ...x, classes:[...(x.classes || [])], payments:[...(x.payments || [])] };
+    if(!x.status) p.status = x.arrived ? 'arrived' : 'new';       // старый формат: галочка → статус
+    else if(!STATUS[p.status]) p.status = 'new';
+    if(!ROLE[p.role]) p.role = 'guest';
+    p.fee = x.fee != null ? (Number(x.fee) || 0) : (p.role === 'team' ? 0 : defFee());
+    if(!p.payments.length && x.paid){                              // старый формат: число → взнос
+      const sum = x.paid === true ? p.fee : (Number(x.paid) || 0);
+      if(sum) p.payments = [{ at:'', sum, note:'перенесено из старого формата' }];
+    }
+    delete p.arrived; delete p.paid;
+    if(!p.id || seen.has(p.id)) p.id = newId();
+    seen.add(p.id);
+    return p;
+  });
+}
+
+/* ── ПОИСК ───────────────────────────────────────────────────
+   Человек стоит перед вами и диктует, как умеет. Телефон сравниваем
+   по цифрам («+7 900» и «8 900» — один номер), комнату — целиком,
+   имя — с начала слова весомее, чем с середины.                    */
+/* «Пётр» набирают как «петр», «Алёна» как «алена»: на стойке ё не жмут
+   никогда. Свёртываем обе стороны — иначе поиск теряет живого человека,
+   который стоит перед вами, и это самая обидная поломка из возможных. */
+const fold = s => String(s ?? '').toLowerCase().replace(/ё/g,'е').trim();
+
+function score(p, q){
+  if(!q) return 1;
+  const name = fold(p.name);
+  const d = digits(q);
+  let s = 0;
+  if(name.startsWith(q)) s = 100;
+  else if(name.split(/\s+/).some(w => w.startsWith(q))) s = 80;
+  else if(name.includes(q)) s = 50;
+  if(fold(p.room) === q) s = Math.max(s, 90);
+  if(d.length >= 3 && digits(p.phone).includes(d)) s = Math.max(s, 70);
+  if(q.length >= 2 && fold(p.tg).includes(q)) s = Math.max(s, 40);
+  if(!s && fold([p.room, p.note, (p.classes||[]).join(' ')].join(' ')).includes(q)) s = 20;
+  return s;
+}
+
+const FILTERS = [
+  ['wait',   'Ожидаем',      p => active(p) && p.status !== 'arrived' && p.status !== 'left'],
+  ['all',    'Все',          () => true],
+  ['arrived','Заехали',      p => p.status === 'arrived'],
+  ['debt',   'С долгом',     p => active(p) && debtOf(p) > 0],
+  ['noroom', 'Без комнаты',  p => active(p) && !String(p.room).trim()],
+  ['team',   'Команда',      p => p.role === 'team'],
+];
+
+/* Пока ищут — фильтр молчит. Набрали фамилию, а человек «отказался»
+   или уже уехал: его всё равно надо найти, иначе поиск врёт в лицо. */
+function visible(people, q, filter){
+  const f = (FILTERS.find(x => x[0] === filter) || FILTERS[1])[2];
+  const rows = people.map(p => [p, q ? score(p,q) : (f(p) ? 1 : 0)]).filter(r => r[1] > 0);
+  rows.sort((a,b) => b[1] - a[1] ||
+    (fold(a[0].name) || 'яяяя').localeCompare(fold(b[0].name) || 'яяяя', 'ru'));
+  return rows.map(r => r[0]);
+}
+</script>
+
+<script>
+/* ═══════════ ФАЙЛ ═══════════════════════════════════════════ */
+
+const P = { people:null, users:[], me:null, h:null, rw:false, raw:'',
+            q:'', filter:'wait', sel:null, busy:false };
+
+/* хэндлы файлов лежат там же, где их оставил штаб: тот же origin,
+   та же база. Открыли папку в штабе — стойка пишет без диалогов. */
+const idb = {
+  open(){ return new Promise((res,rej) => { const r = indexedDB.open('camp-admin',1);
+    r.onupgradeneeded = () => r.result.createObjectStore('h');
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async set(k,v){ try{ const d = await this.open(); d.transaction('h','readwrite').objectStore('h').put(v,k); }catch(_){} },
+  async get(k){ try{ const d = await this.open();
+    return await new Promise(res => { const q = d.transaction('h').objectStore('h').get(k);
+      q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); }catch(_){ return null; } },
+};
+
+/* Право на запись просим только по нажатию — браузер иначе откажет.
+   Без права страница работает как справочник: искать можно, менять нет. */
+async function attach(gesture){
+  const ok = async h => {
+    if(!h || !h.queryPermission) return !!h;
+    let perm = await h.queryPermission({ mode:'readwrite' });
+    if(perm !== 'granted' && gesture) perm = await h.requestPermission({ mode:'readwrite' });
+    return perm === 'granted';
+  };
+  let h = await idb.get('people');
+  if(h && !(await ok(h))) h = null;
+  if(!h){
+    const dir = await idb.get('dir');
+    if(dir && await ok(dir)){
+      try{ h = await dir.getFileHandle('participants.json', { create:true }); }catch(_){}
+    }
+  }
+  P.h = h || null; P.rw = !!h;
+  return P.rw;
+}
+
+async function openFile(){                       // ручной путь: файл выбирают глазами
+  if(!window.showOpenFilePicker) return toast('Браузер не умеет писать в файл — откройте панель в Chrome', 'err');
+  let h;
+  try{ [h] = await showOpenFilePicker({ types:[{ description:'JSON', accept:{'application/json':['.json']} }] }); }
+  catch(_){ return; }
+  P.h = h; P.rw = true;
+  idb.set('people', h);                          // штаб подхватит тот же файл
+  P.raw = '';
+  await pull(); render();
+  toast('Файл открыт — изменения сохраняются сразу');
+}
+
+/* Читаем всегда с диска. По http сосед доступен без диалога, но только
+   на чтение: писать в него можно лишь через хэндл File System Access. */
+async function readDisk(){
+  if(P.h) return (await (await P.h.getFile()).text());
+  const r = await fetch('participants.json', { cache:'no-store' });
+  if(!r.ok) throw new Error('participants.json не отдаётся (' + r.status + ')');
+  return await r.text();
+}
+async function pull(){
+  const text = await readDisk();
+  if(text === P.raw) return false;
+  const arr = JSON.parse(text.trim() || '[]');
+  if(!Array.isArray(arr)) throw new Error('Ожидался JSON-массив участников');
+  P.raw = text;
+  P.people = normalize(arr);
+  return true;
+}
+async function push(){
+  if(!P.h) throw new Error('файл открыт только на чтение');
+  const out = JSON.stringify(P.people, null, 2);
+  const w = await P.h.createWritable();
+  await w.write(out); await w.close();
+  P.raw = out;                                   // ровно то, что теперь на диске
+}
+
+/* ЕДИНСТВЕННЫЙ способ что-то изменить. Перечитать → поменять одного →
+   записать. Ничего не «накапливается»: нечего терять и нечего затирать. */
+async function commit(id, fn, said){
+  if(!P.rw) return toast('Только чтение — нажмите «Разрешить запись» в шапке', 'err');
+  if(P.busy) return;
+  P.busy = true;
+  try{
+    await pull();                                          // чужие правки приезжают сюда
+    const p = id == null ? null : P.people.find(x => x.id === id);
+    if(id != null && !p) throw new Error('этого участника уже нет в файле');
+    const made = fn(p, P.people);
+    await push();
+    if(made) P.sel = made;
+    render();
+    if(said) toast(said);
+  }catch(err){
+    render();
+    toast('Не сохранилось: ' + err.message, 'err');
+  }finally{ P.busy = false; }
+}
+
+/* Пока за стойкой пауза — подтягиваем правки штаба и бота сами.
+   Не трогаем экран, если в поле сейчас печатают. */
+function watch(){
+  const idle = () => !P.busy &&
+    !['INPUT','TEXTAREA'].includes((document.activeElement||{}).tagName || '');
+  const tick = async () => { if(!idle() || !P.people) return;
+    try{ if(await pull()) render(); }catch(_){} };
+  setInterval(tick, 4000);
+  addEventListener('focus', tick);
+}
+</script>
+
+<script>
+/* ═══════════ ЭКРАН ══════════════════════════════════════════ */
+
+const initials = n => String(n||'').trim().split(/\s+/).slice(0,2)
+  .map(w => w[0] || '').join('').toUpperCase() || '—';
+const byId = id => (P.people || []).find(p => p.id === id) || null;
+
+function render(){
+  if(!P.people) return;
+  renderStats(); renderChips(); renderList(); renderCard(); renderFile();
+  $('#qclr').hidden = !P.q;
+  document.body.classList.toggle('card-open', !!P.sel);
+}
+
+function renderFile(){
+  const el = $('#fstate');
+  el.innerHTML = P.rw
+    ? `<span class="fchip" title="Каждое действие пишется в participants.json сразу"><i></i>Пишем в файл</span>`
+    : `<button class="fchip ro" data-act="grant"><i></i>Только чтение — включить запись</button>`;
+}
+
+function renderStats(){
+  const A = P.people.filter(active);
+  const arr = A.filter(p => p.status === 'arrived').length;
+  const wait = A.filter(p => p.status !== 'arrived' && p.status !== 'left').length;
+  const got = A.reduce((a,p) => a + paidOf(p), 0);
+  const debt = A.reduce((a,p) => a + debtOf(p), 0);
+  $('#stats').innerHTML =
+    `<span class="pill ok"><b>${arr}</b> заехали</span>` +
+    `<span class="pill"><b>${wait}</b> ждём</span>` +
+    `<span class="pill"><b>${money(got)}</b> собрано</span>` +
+    (debt ? `<span class="pill wn"><b>${money(debt)}</b> долг</span>` : '');
+}
+
+function renderChips(){
+  $('#chips').innerHTML = FILTERS.map(([k,l,f]) =>
+    `<button class="chip" data-act="filter" data-v="${k}" aria-pressed="${P.filter===k}">${l}<b>${
+      P.people.filter(f).length}</b></button>`).join('');
+}
+
+function liHtml(p){
+  const st = stOf(p), debt = active(p) ? debtOf(p) : 0;
+  const meta = [p.room ? 'комната ' + esc(p.room) : null, esc(p.phone) || null,
+                p.role === 'team' ? 'команда' : null].filter(Boolean).join(' · ');
+  return `<div class="li" data-act="pick" data-id="${p.id}" aria-selected="${P.sel===p.id}">
+    <span class="av" style="background:${st.dot}">${esc(initials(p.name))}</span>
+    <span class="txt">
+      <div class="nm">${esc(p.name) || '<span style="color:#93A79A;font-weight:500">Без имени</span>'}</div>
+      <div class="mt">${meta || '<span style="opacity:.6">нет данных</span>'}</div>
+    </span>
+    <span class="rt">
+      <span class="tag" style="background:${st.bg};color:${st.fg}">${st.l}</span>
+      ${debt ? `<span class="dbt">долг ${money(debt)}</span>` : ''}
+    </span>
+    <button class="tick${p.status==='arrived'?' on':''}" data-act="tick" data-id="${p.id}"
+      title="${p.status==='arrived'?'Отменить заезд':'Отметить заезд'}">✓</button>
+  </div>`;
+}
+
+function renderList(){
+  const rows = visible(P.people, fold(P.q), P.filter);
+  $('#list').innerHTML = rows.length ? rows.map(liHtml).join('')
+    : `<div class="empty">${P.q ? `По запросу «${esc(P.q)}» никого нет.<br>Проверьте фамилию или добавьте нового.`
+        : P.people.length ? 'В этой группе пусто — выберите другой фильтр.'
+        : 'Список пуст. Добавьте первого участника кнопкой внизу.'}</div>`;
+}
+
+/* ── карточка ────────────────────────────────────────────── */
+function renderCard(){
+  const p = byId(P.sel);
+  const el = $('#card');
+  /* На узком экране карточка лежит поверх списка. Пока никто не выбран,
+     её надо убрать совсем, иначе заставка «Кто перед вами?» закрывает
+     собой тот самый список, к которому она предлагает вернуться. */
+  el.hidden = !p;
+  if(!p){
+    P.sel = null;
+    el.innerHTML = `<div class="blank"><div>
+      <div class="big">Кто перед вами?</div>
+      Начните набирать фамилию, телефон или номер комнаты — список слева
+      сузится сразу. Ставить заезд можно прямо из списка, кнопкой ✓.</div></div>`;
+    return;
+  }
+  const st = stOf(p), fee = Number(p.fee)||0, paid = paidOf(p), debt = debtOf(p);
+  const pct = fee ? Math.min(100, paid/fee*100) : (paid ? 100 : 0);
+  const arrived = p.status === 'arrived';
+
+  el.innerHTML = `
+    <div class="ch">
+      <span class="av" style="background:${st.dot}">${esc(initials(p.name))}</span>
+      <span class="nmwrap">
+        <input class="nm" data-f="name" data-id="${p.id}" value="${esc(p.name)}" placeholder="Имя и фамилия">
+        <span class="sub">
+          <span class="tag" style="background:${st.bg};color:${st.fg}">${st.l}</span>
+          <span>${ROLE[p.role].l}</span>
+          ${p.arrivedAt ? `<span>заехал ${esc(p.arrivedAt)}</span>` : ''}
+        </span>
+      </span>
+      <button class="x only-narrow" data-act="close" title="Закрыть (Esc)">✕</button>
+    </div>
+
+    <div class="hero">
+      <button class="b-hero${arrived?' leave':''}" data-act="arrive" data-id="${p.id}">
+        ${arrived ? 'Отметить отъезд' : '✓ Отметить заезд'}</button>
+      ${debt ? `<button class="b-hero money" data-act="pay" data-id="${p.id}" data-sum="${debt}">
+        Принять ${money(debt)}</button>` : ''}
+    </div>
+
+    <div class="sec"><h4>Статус регистрации</h4>
+      <div class="seg">${Object.entries(STATUS).map(([k,v]) =>
+        `<button data-act="stat" data-id="${p.id}" data-v="${k}" aria-pressed="${p.status===k}"
+          ${p.status===k?`style="background:${v.dot}"`:''}>${v.l}</button>`).join('')}</div>
+    </div>
+
+    <div class="sec"><h4>Заселение</h4>
+      <div class="g2">
+        <label class="f"><span>Комната</span>
+          <input class="room" data-f="room" data-id="${p.id}" value="${esc(p.room)}" placeholder="не заселён" enterkeyhint="done"></label>
+        <label class="f"><span>Кто это</span>
+          <div class="seg" style="margin-top:2px">${Object.entries(ROLE).map(([k,v]) =>
+            `<button data-act="role" data-id="${p.id}" data-v="${k}" aria-pressed="${p.role===k}"
+              ${p.role===k?'style="background:var(--acc)"':''}>${v.l}</button>`).join('')}</div></label>
+      </div>
+    </div>
+
+    <div class="sec"><h4>Взносы</h4>
+      <div class="mrow">
+        <span class="msum" style="color:${debt?'var(--warn)':'var(--acc)'}">${money(paid)}</span>
+        <span class="mof">из ${money(fee)}${debt ? ` · долг ${money(debt)}` : fee ? ' · всё внесено' : ''}</span>
+      </div>
+      <div class="bar${debt?'':' done'}"><i style="width:${pct}%"></i></div>
+      ${p.payments.length ? `<div class="pays">${p.payments.map((x,j) => `<div class="pay">
+        <input type="date" data-f="pay.${j}.at" data-id="${p.id}" value="${esc(x.at)}">
+        <input type="number" min="0" step="100" inputmode="numeric" data-f="pay.${j}.sum" data-id="${p.id}" value="${Number(x.sum)||0}">
+        <input data-f="pay.${j}.note" data-id="${p.id}" value="${esc(x.note)}" placeholder="наличные / перевод">
+        <button data-act="delpay" data-id="${p.id}" data-j="${j}" title="Удалить взнос">✕</button>
+      </div>`).join('')}</div>` : ''}
+      <div class="quick">
+        ${debt ? `<button class="pri" data-act="pay" data-id="${p.id}" data-sum="${debt}">Внести остаток</button>` : ''}
+        ${[1000,2000,5000].map(s => `<button data-act="pay" data-id="${p.id}" data-sum="${s}">+${money(s)}</button>`).join('')}
+        <button data-act="paysome" data-id="${p.id}">Другая сумма…</button>
+      </div>
+      <label class="f" style="margin-top:12px"><span>Сколько всего должен внести</span>
+        <input type="number" min="0" step="100" inputmode="numeric" data-f="fee" data-id="${p.id}" value="${fee}"></label>
+    </div>
+
+    <div class="sec"><h4>Связь</h4>
+      <div class="g2">
+        <label class="f"><span>Телефон</span>
+          <input type="tel" data-f="phone" data-id="${p.id}" value="${esc(p.phone)}" placeholder="+7 …"></label>
+        <label class="f"><span>Telegram (без @)</span>
+          <input data-f="tg" data-id="${p.id}" value="${esc(p.tg)}" placeholder="—"></label>
+      </div>
+      ${p.phone || p.tg || p.tgId || p.maxId ? `<div class="quick" style="margin-top:10px">
+        ${p.phone ? `<a class="ro" href="tel:${esc(p.phone)}">Позвонить ↗</a>` : ''}
+        ${p.tg ? `<a class="ro" href="https://t.me/${esc(p.tg)}" target="_blank" rel="noopener">@${esc(p.tg)} ↗</a>` : ''}
+        ${p.tgId ? `<span class="ro">🤖 привязал телеграм</span>` : ''}
+        ${p.maxId ? `<span class="ro">🤖 привязал MAX</span>` : ''}</div>` : ''}
+    </div>
+
+    ${p.classes.length ? `<div class="sec"><h4>Мастер-классы</h4>
+      <div class="quick">${p.classes.map(c => `<span class="clschip">${esc(c)}</span>`).join('')}</div>
+      <p style="font-size:12px;color:var(--mut);margin-top:9px">Записи меняются в штабе — здесь только видно.</p>
+    </div>` : ''}
+
+    <div class="sec"><h4>Заметка</h4>
+      <label class="f"><textarea data-f="note" data-id="${p.id}" rows="3"
+        placeholder="Аллергия, лекарства, с кем едет, особые условия">${esc(p.note)}</textarea></label>
+    </div>`;
+}
+</script>
+
+<script>
+/* ═══════════ ДЕЙСТВИЯ ═══════════════════════════════════════ */
+
+const ACT = {
+  pick: b => { P.sel = b.dataset.id; render();
+               const c = $('#card'); if(c) c.scrollTop = 0; },
+  close: () => { P.sel = null; render(); },
+  clr:  () => { P.q = ''; $('#q').value = ''; render(); $('#q').focus(); },
+  filter: b => { P.filter = b.dataset.v; render(); },
+  grant: async () => { if(await attach(true)){ await pull(); render(); toast('Запись включена'); }
+                       else openFile(); },
+  out: () => { try{ sessionStorage.removeItem(WHO); }catch(_){} location.reload(); },
+
+  tick: b => { const id = b.dataset.id;
+    commit(id, p => setArrived(p, p.status !== 'arrived'),
+           byId(id) && byId(id).status === 'arrived' ? 'Заезд отменён' : 'Заехал'); },
+  arrive: b => ACT.tick(b),
+
+  stat: b => commit(b.dataset.id, p => {
+    if(b.dataset.v === 'arrived') return setArrived(p, true);
+    p.status = b.dataset.v;
+  }, 'Статус: ' + STATUS[b.dataset.v].l),
+
+  role: b => commit(b.dataset.id, p => {
+    p.role = b.dataset.v;
+    /* «Команда» взносов не платит — но уже внесённые деньги не трогаем,
+       иначе один промах по кнопке стирает запись о полученных деньгах. */
+    if(p.role === 'team' && !paidOf(p)) p.fee = 0;
+    if(p.role === 'guest' && !p.fee && !paidOf(p)) p.fee = defFee();
+  }),
+
+  pay: b => { const sum = Number(b.dataset.sum) || 0;
+    if(sum > 0) commit(b.dataset.id, p => { p.payments.push({ at:today(), sum, note:'' }); },
+                       'Принято ' + money(sum)); },
+  paysome: b => { const v = prompt('Сколько внесли, ₽');
+    if(v == null) return;
+    const sum = Number(String(v).replace(',','.').replace(/\s/g,''));
+    if(!(sum > 0)) return toast('Нужна сумма числом', 'err');
+    commit(b.dataset.id, p => { p.payments.push({ at:today(), sum, note:'' }); }, 'Принято ' + money(sum)); },
+  delpay: b => commit(b.dataset.id, p => { p.payments.splice(Number(b.dataset.j), 1); }, 'Взнос удалён'),
+
+  new: () => commit(null, (_, all) => {
+    const p = { ...PERSON, id:newId(), classes:[], payments:[], fee:defFee() };
+    all.push(p);
+    return p.id;                                   // commit сам выделит новичка
+  }, 'Добавлен — впишите имя'),
+};
+
+/* Заезд ставит и время: за стойкой потом спрашивают «а когда он приехал». */
+function setArrived(p, on){
+  if(on){ p.status = 'arrived'; p.arrivedAt = nowLocal(); }
+  else  { p.status = 'confirmed'; delete p.arrivedAt; }
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]');
+  if(!b || !P.people) return;
+  const fn = ACT[b.dataset.act];
+  if(!fn) return;
+  e.preventDefault(); e.stopPropagation();
+  fn(b);
+});
+
+/* Текстовые поля сохраняются по уходу из поля (change), а не на каждой
+   букве: иначе перерисовка вырывала бы курсор из-под пальцев. */
+document.addEventListener('change', e => {
+  const t = e.target.closest('[data-f]');
+  if(!t || !P.people) return;
+  const f = t.dataset.f, v = t.value;
+  commit(t.dataset.id, p => {
+    if(f.startsWith('pay.')){
+      const [, j, k] = f.split('.');
+      const row = p.payments[Number(j)];
+      if(!row) throw new Error('этот взнос уже удалён');
+      row[k] = k === 'sum' ? (Number(v) || 0) : v;
+      return;
+    }
+    p[f] = f === 'fee' ? (Number(v) || 0) : (f === 'tg' ? v.trim().replace(/^@/,'') : v);
+  });
+});
+
+$('#q').addEventListener('input', e => { P.q = e.target.value; renderList(); $('#qclr').hidden = !P.q; });
+
+/* Клавиатура: за стойкой руки на клавишах, а не на мыши. */
+addEventListener('keydown', e => {
+  if(!P.people || $('#gate').hidden === false) return;
+  const inField = ['INPUT','TEXTAREA'].includes(e.target.tagName);
+  if(e.key === 'Escape'){
+    if(P.q && e.target === $('#q')) return ACT.clr();
+    if(P.sel) { ACT.close(); $('#q').focus(); }
+    return;
+  }
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    if(inField && e.target !== $('#q')) return;
+    const rows = visible(P.people, fold(P.q), P.filter);
+    if(!rows.length) return;
+    e.preventDefault();
+    const at = rows.findIndex(p => p.id === P.sel);
+    const next = e.key === 'ArrowDown' ? Math.min(rows.length-1, at+1) : Math.max(0, at < 0 ? 0 : at-1);
+    P.sel = rows[next].id; render();
+    const li = $(`.li[data-id="${P.sel}"]`); if(li) li.scrollIntoView({ block:'nearest' });
+    return;
+  }
+  /* любая буква мимо полей — это начали набирать фамилию */
+  if(!inField && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) $('#q').focus();
+});
+</script>
+
+<script>
+/* ═══════════ ВХОД ═══════════════════════════════════════════
+   Тот же users.json и тот же PBKDF2, что в штабе: два списка людей
+   с правами — это два списка, которые однажды разойдутся.
+   За стойку пускаем роли, у которых в штабе есть раздел «Участники». */
+
+const DESK_ROLES = ['admin','lead','desk'];
+const ROLE_NAME = { admin:'Главный', lead:'Вожатый', desk:'Регистратура', content:'Редактор' };
+const ITER = 120000;
+const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,'0')).join('');
+const loginClean = s => String(s||'').trim().toLowerCase()
+  .replace(/[^a-z0-9._-]/g,'').replace(/^[._-]+/,'').slice(0,32);
+
+async function hashPass(pass, salt){
+  if(!crypto.subtle) throw new Error(
+    'Браузер не даёт криптографию на этом адресе. Откройте так: http://localhost:8000/reception.html');
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveBits']);
+  return hex(await crypto.subtle.deriveBits(
+    { name:'PBKDF2', hash:'SHA-256', salt:new TextEncoder().encode(salt), iterations:ITER }, key, 256));
+}
+const findUser = login => P.users.find(u => u.login === String(login).toLowerCase());
+async function verify(u, pass){
+  if(!u || u.off || !u.salt || !u.hash) return false;
+  return await hashPass(pass, u.salt) === u.hash;
+}
+function setUsers(text){
+  const arr = JSON.parse(String(text).trim() || '[]');
+  if(!Array.isArray(arr)) throw new Error('Ожидался JSON-массив пользователей — это другой файл');
+  P.users = arr.filter(x => x && x.login).map(x => ({
+    login: loginClean(x.login), name: String(x.name || x.login), role: String(x.role || 'desk'),
+    salt: String(x.salt || ''), hash: String(x.hash || ''), off: !!x.off }));
+}
+async function loadUsers(){
+  if(!/^https?:$/.test(location.protocol)) return;
+  try{
+    const r = await fetch('users.json', { cache:'no-store' });
+    if(r.ok) setUsers(await r.text());
+  }catch(_){}
+}
+
+const WHO = 'camp-admin-who';                    // тот же ключ, что в штабе
+const PINE = `<svg viewBox="0 0 18 22" fill="currentColor"><path d="M9 0 3.5 9h2.9L1.2 18.6h6.7V22h2.2v-3.4h6.7L11.6 9h2.9z"/></svg>`;
+const gateBox = html => { $('#gate').innerHTML = `<div class="gbox">
+  <div class="mark">${PINE}<h1>Ресепшн</h1></div>
+  <p class="eyebrow">Стойка регистрации лагеря</p>${html}
+  <p class="lim">Страница и личные данные в лагерную Wi-Fi не уходят — их видно
+  только с этого ноутбука. Вход закрывает стойку от посторонних рук.</p></div>`; };
+const gateErr = m => { const el = $('#gate .msg'); if(el) el.textContent = m; };
+
+function showGate(){
+  if(!P.users.length) return gateBox(`
+    <p style="font-size:13px;line-height:1.65;color:var(--mut)">Список доступа
+    <code>users.json</code> пока пуст или не читается. Заведите первого
+    пользователя в штабе — стойка берёт тот же файл.</p>
+    <a class="b-pri" href="admin.html" style="display:grid;place-items:center;text-decoration:none;margin-top:14px">Открыть штаб</a>
+    <div class="msg"></div>
+    <button class="chip" data-gact="openusers" style="width:100%;margin-top:9px;min-height:42px">Открыть users.json вручную</button>`);
+  gateBox(`
+    <label class="f"><span>Логин</span><input id="gLogin" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
+    <label class="f"><span>Пароль</span><input id="gPass" type="password" autocomplete="current-password"></label>
+    <button class="b-pri" data-gact="login">Войти</button>
+    <div class="msg"></div>`);
+  const l = $('#gLogin'); if(l) l.focus();
+}
+async function doLogin(){
+  const login = loginClean($('#gLogin').value), pass = $('#gPass').value;
+  if(!login || !pass) return gateErr('Заполните логин и пароль');
+  let ok = false;
+  try{ ok = await verify(findUser(login), pass); }catch(err){ return gateErr(err.message); }
+  if(!ok){ $('#gPass').value = ''; return gateErr('Логин или пароль не подходят'); }
+  const u = findUser(login);
+  if(!DESK_ROLES.includes(u.role))
+    return gateErr(`Роль «${ROLE_NAME[u.role] || u.role}» не работает со списком участников`);
+  signIn(u);
+}
+function signIn(u){
+  P.me = u;
+  try{ sessionStorage.setItem(WHO, u.login); }catch(_){}
+  $('#gate').hidden = true;
+  document.body.classList.remove('locked');
+  $('#me').textContent = u.name + ' · ' + (ROLE_NAME[u.role] || u.role);
+  start();
+}
+
+$('#gate').addEventListener('click', e => {
+  const b = e.target.closest('[data-gact]');
+  if(!b) return;
+  e.preventDefault();
+  if(b.dataset.gact === 'login') doLogin();
+  if(b.dataset.gact === 'openusers') $('#uFile').click();
+});
+$('#gate').addEventListener('keydown', e => {
+  if(e.key === 'Enter' && $('#gate [data-gact=login]')){ e.preventDefault(); doLogin(); }
+});
+$('#uFile').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if(!f) return;
+  try{ setUsers(await f.text()); showGate(); }catch(err){ gateErr(err.message); }
+});
+</script>
+
+<script>
+/* ═══════════ СТАРТ ══════════════════════════════════════════ */
+
+function banner(html){ const b = $('#banner'); b.hidden = !html; b.innerHTML = html ? `<div class="note">${html}</div>` : ''; }
+
+async function start(){
+  await attach(false);                        // молча: право уже могли дать в штабе
+  try{
+    await pull();
+  }catch(err){
+    P.people = [];
+    banner(`Не получилось прочитать <code>participants.json</code>: ${esc(err.message)}.
+      <button data-act="grant">Открыть файл вручную</button>`);
+  }
+  if(P.people && !P.rw)
+    banner(`Файл открыт только на чтение — заезд и взносы записать не выйдет.
+      <button data-act="grant">Разрешить запись</button>`);
+  else if(P.people && P.rw) banner('');
+  render();
+  $('#q').focus();
+  watch();
+}
+
+async function boot(){
+  await loadUsers();
+  let who = null;
+  try{ who = sessionStorage.getItem(WHO); }catch(_){}
+  const u = who && findUser(who);
+  if(u && !u.off && DESK_ROLES.includes(u.role)) return signIn(u);   // права перечитаны из файла
+  showGate();
+}
+
+if(location.hash !== '#selftest') boot();
+</script>
+
+<script>
+/* ═══════════ САМОПРОВЕРКА (reception.html#selftest) ══════════
+   Не тесты ради тестов: здесь проверяется ровно то, что ломается
+   молча — совпадение модели со штабом, слияние с чужой правкой
+   и порядок выдачи поиска.                                        */
+if(location.hash === '#selftest'){ (async () => {
+  const out = [], ok = (n,c) => out.push(`${c ? '✅' : '❌'} ${n}`);
+
+  /* ── модель ── */
+  const [a] = normalize([{ name:'Аня', phone:'+7 900 111-22-33', room:'12', arrived:true, paid:true, fee:8000 }]);
+  ok('старый формат: галочка → статус, «оплачено» → взнос',
+     a.status === 'arrived' && paidOf(a) === 8000 && a.payments.length === 1);
+  ok('участнику проставлен id', /^[0-9a-z-]{6,}$/i.test(a.id));
+  const keep = normalize([{ name:'Б', id:'keepme', tgId:'42', room:'3' }])[0];
+  ok('чужие поля (id бота, id стойки) не теряются', keep.id === 'keepme' && keep.tgId === '42');
+  const dup = normalize([{ name:'A', id:'x' }, { name:'B', id:'x' }]);
+  ok('одинаковые id разводятся', dup[0].id !== dup[1].id);
+  ok('битые строки в файле не роняют список', normalize([null, 'мусор', { name:'В' }]).length === 1);
+  ok('деньги: внесено и долг', paidOf({ payments:[{sum:3000},{sum:'2000'}] }) === 5000 &&
+     debtOf({ fee:8000, payments:[{sum:3000}] }) === 5000 &&
+     debtOf({ fee:1000, payments:[{sum:5000}] }) === 0);
+  ok('статусы совпадают со штабом',
+     Object.keys(STATUS).join() === 'new,confirmed,arrived,left,cancelled');
+
+  /* ── поиск ── */
+  const L = normalize([
+    { name:'Пётр Ким',     phone:'+7 900 111-22-33', room:'12' },
+    { name:'Анна Петрова', phone:'8 901 555-00-11',  room:'3', status:'cancelled' },
+    { name:'Пётр Смирнов', phone:'',                 room:'7', status:'arrived' },
+  ]);
+  const q = (s,f='all') => visible(L, s, f).map(p => p.name);
+  ok('«Пётр» находится по «петр» — ё на стойке не набирают', q('петр').length === 3);
+  ok('фамилия с начала слова выше, чем с середины', q('петр')[2] === 'Анна Петрова');
+  ok('телефон ищется по цифрам, а не по формату', q('9001112233').join() === 'Пётр Ким');
+  ok('«8 901» и «+7 901» — один номер', q('9015550011').join() === 'Анна Петрова');
+  ok('комната ищется точным номером', q('12')[0] === 'Пётр Ким');
+  ok('поиск сильнее фильтра: отказавшегося всё равно находим',
+     visible(L, 'анна', 'wait').length === 1);
+  ok('пустой запрос отдаёт только выбранную группу',
+     visible(L, '', 'arrived').map(p => p.name).join() === 'Пётр Смирнов');
+  ok('без имени и без совпадений — пусто', visible(L, 'щщщ', 'all').length === 0);
+
+  /* ── заезд ── */
+  const t = { status:'new' };
+  setArrived(t, true);
+  ok('заезд ставит статус и время', t.status === 'arrived' && /^\d{4}-\d\d-\d\d \d\d:\d\d$/.test(t.arrivedAt));
+  setArrived(t, false);
+  ok('отмена заезда убирает и время', t.status === 'confirmed' && !('arrivedAt' in t));
+
+  /* ── слияние: главное, ради чего всё это ── */
+  let disk = JSON.stringify([{ id:'anya', name:'Аня', fee:8000, payments:[] }], null, 2);
+  P.h = {                                             // поддельный файл на диске
+    async getFile(){ return { text: async () => disk }; },
+    async createWritable(){ let buf = '';
+      return { async write(s){ buf = s; }, async close(){ disk = buf; } }; },
+  };
+  P.rw = true; P.raw = ''; P.people = null; P.busy = false;
+  const noop = () => {};
+  const realRender = window.render, realToast = window.toast;
+  window.render = noop; window.toast = noop;
+
+  await pull();
+  ok('файл прочитан', P.people.length === 1 && P.people[0].name === 'Аня');
+
+  /* штаб дописал второго и поменял комнату первому, пока стойка ждала */
+  disk = JSON.stringify([{ id:'anya', name:'Аня', fee:8000, payments:[], room:'12' },
+                         { id:'bob',  name:'Боря', fee:8000, payments:[] }], null, 2);
+  await commit('anya', p => { p.payments.push({ at:'2026-08-26', sum:3000, note:'' }); });
+  const after = JSON.parse(disk);
+  ok('чужая правка не затёрта: второй участник на месте', after.length === 2);
+  ok('чужая правка не затёрта: комната сохранилась', after[0].room === '12');
+  ok('наша правка записалась', paidOf(after[0]) === 3000);
+
+  /* участника удалили из файла, а карточка на экране осталась */
+  disk = JSON.stringify([{ id:'bob', name:'Боря', fee:8000, payments:[] }], null, 2);
+  let said = '';
+  window.toast = m => { said = m; };
+  await commit('anya', p => { p.room = '99'; });
+  ok('правка исчезнувшего участника не создаёт его заново',
+     JSON.parse(disk).length === 1 && /уже нет/.test(said));
+
+  /* без права на запись файл не трогаем вовсе */
+  P.rw = false; said = '';
+  const before = disk;
+  await commit('bob', p => { p.room = '1'; });
+  ok('в режиме чтения файл не меняется', disk === before && /чтени/i.test(said));
+
+  window.render = realRender; window.toast = realToast;
+  document.body.innerHTML = `<pre style="padding:26px;font:15px/2 ui-monospace,monospace">${out.join('\n')}</pre>`;
+  document.body.className = '';
+})(); }
+</script>
+</body>
+</html>
