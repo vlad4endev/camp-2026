@@ -80,16 +80,22 @@ systemctl enable --now camp-pull.timer
 `pull.sh` сам поймёт, что запущен впервые: в `/srv/camp` ещё нет лендинга.
 Дальше он выкладывает только при новом коммите в `main`.
 
-Прокси и сертификат:
+Прокси и сертификат. `A`-запись `camp` → IP сервера должна быть
+**до** этого шага: certbot проверяет домен по HTTP-01, то есть Let's
+Encrypt должен достучаться до этого сервера по имени.
 
 ```bash
-cp /srv/camp/deploy/nginx.conf /etc/nginx/sites-available/camp.offline-tambov.ru
-ln -s /etc/nginx/sites-available/camp.offline-tambov.ru /etc/nginx/sites-enabled/
-certbot --nginx -d camp.offline-tambov.ru      # выпишет сертификат и допишет ssl_*
+cp /srv/camp-src/deploy/nginx.conf /etc/nginx/sites-available/camp.offline-tambov.ru
+ln -sf /etc/nginx/sites-available/camp.offline-tambov.ru /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default      # чтобы наш server_name стал основным
+nginx -t && systemctl reload nginx          # пройдёт: TLS в конфиге ещё нет
+certbot --nginx -d camp.offline-tambov.ru   # допишет 443, ssl_* и редирект с 80
 nginx -t && systemctl reload nginx
 ```
 
-DNS: `A`-запись `camp` → IP сервера, до запуска certbot.
+Конфиг лежит без TLS намеренно: объявить `listen 443 ssl` заранее нельзя —
+`nginx -t` упал бы на отсутствующем сертификате, а certbot прогоняет
+`nginx -t` перед работой и отказался бы стартовать.
 
 Участники (с ноутбука, после того как сервер поднялся):
 
