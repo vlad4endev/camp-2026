@@ -242,6 +242,28 @@ $('#f').addEventListener('submit', async e => {
 /* ── 4. ЗАГРУЗКА ───────────────────────────────────────────────────*/
 
 (async () => {
+  /* Внешняя петля: страницу перезагружает не наш код — застрявший
+     service worker крутит старые копии из кэша, и никакие правки на
+     сервере до вкладки не доезжают. Ловим по частоте: 4 загрузки за
+     10 секунд человек не сделает. Лечим отсюда то, что умеем: снимаем
+     все воркеры и вычищаем кэши — старые копии исчезают, следующая
+     загрузка идёт в сеть. Лендинг заново поставит свой воркер сам. */
+  try {
+    const now = Date.now();
+    const loads = JSON.parse(sessionStorage.getItem('camp-enter-loads') || '[]')
+      .filter(t => now - t < 10000);
+    loads.push(now);
+    sessionStorage.setItem('camp-enter-loads', JSON.stringify(loads));
+    if (loads.length >= 4) {
+      if (navigator.serviceWorker)
+        for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+      if (window.caches)
+        for (const k of await caches.keys()) await caches.delete(k);
+      sessionStorage.removeItem('camp-enter-loads');
+      msg('Страница зациклилась — почистили кэш браузера. Обновите её ещё раз и войдите.');
+    }
+  } catch (_) {}
+
   place();
   try { await setup(); }
   catch (err) { msg(err.message); $('#go').disabled = true; return; }
