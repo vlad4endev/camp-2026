@@ -39,7 +39,7 @@ export function pick(users, want){
   return by(want.email) || want.aka.map(by).find(Boolean) || null;
 }
 
-async function main(){
+function init(){
   const env = { ...parseEnv(readFileSync('/etc/camp.env', 'utf8')), ...process.env };
   const URL = env.SUPABASE_URL, KEY = env.SUPABASE_SERVICE_KEY;
   if (!URL || !KEY) throw new Error('в /etc/camp.env нет SUPABASE_URL или SUPABASE_SERVICE_KEY');
@@ -52,6 +52,42 @@ async function main(){
     if (!r.ok) throw new Error(method + ' ' + path + ' → ' + r.status + ' ' + JSON.stringify(d));
     return d;
   };
+  return { URL, KEY, ANON: env.SUPABASE_ANON_KEY || '', PASS, H, call };
+}
+
+/* --check: ничего не меняет. Показывает учётки как их видит GoTrue и
+   пробует войти каждой с паролем из CAMP_PASS тем же путём, каким входит
+   браузер, — чтобы отличить «пароль не тот» от «сломано что-то ещё». */
+async function check(){
+  const { URL, ANON, PASS, call } = init();
+  const got = await call('GET', '/auth/v1/admin/users?per_page=1000');
+  const users = got.users || got;
+
+  console.log('== учётки в GoTrue:');
+  for (const u of users)
+    console.log(`  ${u.email}  aud=${JSON.stringify(u.aud)}  confirmed=${!!u.email_confirmed_at}` +
+      `  banned=${u.banned_until || '-'}  создан=${(u.created_at || '').slice(0, 10)}`);
+
+  console.log('== строки staff:');
+  const rows = await call('GET', '/rest/v1/staff?select=email,role,off');
+  for (const s of rows) console.log(`  ${s.email}  роль=${s.role}  off=${s.off}`);
+
+  console.log('== пробный вход (как из браузера, ключом anon):');
+  if (!PASS) { console.log('  CAMP_PASS не задан — вход не пробую'); return; }
+  for (const w of STAFF) {
+    const r = await fetch(URL + '/auth/v1/token?grant_type=password', {
+      method: 'POST',
+      headers: { apikey: ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: w.email, password: PASS }),
+    });
+    const d = await r.json().catch(() => ({}));
+    console.log(`  ${w.email}: ` + (r.ok ? 'ВХОД ЕСТЬ'
+      : r.status + ' ' + (d.error_description || d.msg || d.error || JSON.stringify(d))));
+  }
+}
+
+async function main(){
+  const { URL, PASS, H, call } = init();
 
   const got = await call('GET', '/auth/v1/admin/users?per_page=1000');
   const users = got.users || got;
@@ -88,7 +124,9 @@ async function main(){
 }
 
 /* node staff-setup.mjs --selftest — проверка разбора без сети и сервера. */
-if (process.argv.includes('--selftest')) {
+if (process.argv.includes('--check')) {
+  check().catch(err => { console.error('[staff] ' + err.message); process.exit(1); });
+} else if (process.argv.includes('--selftest')) {
   const a = (ok, t) => { if (!ok) { console.error('ПЛОХО: ' + t); process.exit(1); } };
   const e = parseEnv('SUPABASE_URL=https://x\n# коммент\nПУСТО\nSUPABASE_SERVICE_KEY=k=v\n');
   a(e.SUPABASE_URL === 'https://x', 'env: простая пара');
