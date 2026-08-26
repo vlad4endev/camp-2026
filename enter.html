@@ -221,6 +221,15 @@ $('#f').addEventListener('submit', async e => {
   const email = $('#email').value.trim(), pass = $('#pass').value;
   if (!email || !pass) return msg('Заполните e-mail и пароль');
 
+  /* Самая частая причина «не пускает» — невидимое: пароль набран в русской
+     раскладке (в поле одни точки) или с пробелом. Говорим об этом ДО похода
+     в базу: она ответила бы «не подходит», не объяснив, что именно пришло. */
+  const blind =
+    /[а-яё]/i.test(pass)  ? 'Пароль набран русскими буквами — переключите раскладку на латиницу' :
+    /\s/.test(pass)       ? 'В пароле есть пробел — уберите его' :
+    /[а-яё]/i.test(email) ? 'В адресе есть русские буквы — наберите латиницей' : '';
+  if (blind) return msg(blind);
+
   busy = true; $('#go').disabled = true; msg('Проверяем…', true);
   try {
     if (MODE === 'db') {
@@ -235,7 +244,12 @@ $('#f').addEventListener('submit', async e => {
     }
   } catch (err) {
     $('#pass').value = '';
-    msg(err.message);
+    /* Ответ базы переводим и досылаем длину пароля: «не подходит» при
+       верных с виду данных почти всегда значит лишний невидимый символ,
+       и число — единственный способ его заметить. */
+    msg(/invalid login credentials/i.test(err.message)
+      ? 'Логин или пароль не подходят (в пароле было ' + pass.length + ' симв.)'
+      : err.message);
   } finally { busy = false; $('#go').disabled = false; }
 });
 
